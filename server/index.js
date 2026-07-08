@@ -58,6 +58,7 @@ import notificationRoutes from './modules/notifications/notifications.routes.js'
 import userRoutes from './routes/user.js';
 import pluginsRoutes from './routes/plugins.js';
 import providerRoutes from './modules/providers/provider.routes.js';
+import { createSessionWakeRoutes } from './modules/session-wake/index.js';
 import voiceRoutes from './voice-proxy.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { assetsRoutes } from './modules/assets/index.js';
@@ -102,6 +103,15 @@ function readUsageNumber(value) {
 const app = express();
 const server = http.createServer(app);
 
+// Shared by the chat websocket and the headless session-wake route below —
+// both need to dispatch a turn to the right provider runtime.
+const chatSpawnFns = {
+    claude: queryClaudeSDK,
+    cursor: spawnCursor,
+    codex: queryCodex,
+    opencode: spawnOpenCode,
+};
+
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 const wss = createWebSocketServer(server, {
     verifyClient: {
@@ -109,12 +119,7 @@ const wss = createWebSocketServer(server, {
         authenticateWebSocket,
     },
     chat: {
-        spawnFns: {
-            claude: queryClaudeSDK,
-            cursor: spawnCursor,
-            codex: queryCodex,
-            opencode: spawnOpenCode,
-        },
+        spawnFns: chatSpawnFns,
         abortFns: {
             claude: abortClaudeSDKSession,
             cursor: abortCursorSession,
@@ -214,6 +219,10 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 
 // Unified provider MCP routes (protected)
 app.use('/api/providers', authenticateToken, providerRoutes);
+
+// Headless session wake (protected) — lets a finished background job inject
+// a turn into an idle session; see modules/session-wake for why this exists.
+app.use('/api/sessions', authenticateToken, createSessionWakeRoutes(chatSpawnFns));
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
