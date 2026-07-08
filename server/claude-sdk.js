@@ -371,12 +371,14 @@ function extractTokenBudget(sdkMessage) {
  *
  * Always uses the SDK's streaming-input mode (a single-message async
  * generator) rather than a bare string, even for plain text turns with no
- * image attachments. Control-request methods on the returned `Query`
- * instance (`backgroundTasks()`, `streamInput()`) are only available in
- * streaming mode — needed so a turn that backgrounds a shell command can
- * later receive its `task_notification` and hand off a follow-up on the same
- * still-open query instance instead of losing the notification when the
- * turn's process exits.
+ * image attachments. The `Stop`/`SubagentStop` hooks' `background_tasks`
+ * field and the in-stream `task_notification` message are only populated in
+ * streaming mode — needed so a turn that backgrounds a shell command keeps
+ * its query instance resident long enough to observe the task finishing,
+ * instead of losing the notification when the turn's process exits early.
+ * The follow-up itself is delivered via a fresh `wakeSession(...)` call
+ * (a new, properly-registered run), not by injecting into this query
+ * instance.
  *
  * @param {string} command - User prompt
  * @param {Array} images - Image descriptors ({ path, name?, mimeType? })
@@ -386,24 +388,6 @@ function extractTokenBudget(sdkMessage) {
 async function buildPromptPayload(command, images, cwd) {
   const hasImages = normalizeImageDescriptors(images).length > 0;
   const content = hasImages ? await buildClaudeUserContent(command, images, cwd) : command;
-  return (async function* () {
-    yield {
-      type: 'user',
-      message: {
-        role: 'user',
-        content
-      },
-      parent_tool_use_id: null,
-      timestamp: new Date().toISOString()
-    };
-  })();
-}
-
-/**
- * Wraps a single SDKUserMessage-shaped payload as a one-shot async iterable
- * suitable for `Query#streamInput()`.
- */
-function singleMessageStream(content) {
   return (async function* () {
     yield {
       type: 'user',
@@ -738,8 +722,20 @@ async function queryClaudeSDK(command, options = {}, ws) {
           dedupeKey: `claude:task_notification:${sid || 'none'}:${message.task_id}`
         }));
         const wakePrompt = `A background task you started has finished (status: ${message.status}). Summary: ${message.summary}`;
-        await queryInstance.streamInput(singleMessageStream(wakePrompt));
-        continue;
+        queryInstance.close();
+        if (appSessionId) {
+          const { wakeSession } = await import('./modules/session-wake/index.js');
+          wakeSession({ claude: queryClaudeSDK }, {
+            sessionId: appSessionId,
+            prompt: wakePrompt,
+            userId: ws?.userId || null,
+          }).catch((error) => {
+            console.error('[wake] wakeSession call failed for session', appSessionId, error);
+          });
+        } else {
+          console.error('[wake] no appSessionId available, cannot deliver task_notification follow-up');
+        }
+        break;
       }
 
       // Transform and normalize message via adapter
