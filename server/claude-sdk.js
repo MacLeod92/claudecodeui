@@ -724,13 +724,22 @@ async function queryClaudeSDK(command, options = {}, ws) {
         const wakePrompt = `A background task you started has finished (status: ${message.status}). Summary: ${message.summary}`;
         queryInstance.close();
         if (appSessionId) {
-          const { wakeSession } = await import('./modules/session-wake/index.js');
-          wakeSession({ claude: queryClaudeSDK }, {
-            sessionId: appSessionId,
-            prompt: wakePrompt,
-            userId: ws?.userId || null,
-          }).catch((error) => {
-            console.error('[wake] wakeSession call failed for session', appSessionId, error);
+          // Deferred to the next macrotask: chatRunRegistry still considers
+          // *this* turn's run active until queryClaudeSDK's own promise
+          // resolves and the caller (chat-websocket.service.ts) marks it
+          // complete. Calling wakeSession synchronously here would race that
+          // and always bounce off RUN_IN_PROGRESS, since wakeSession's own
+          // startRun() runs the moment it's called.
+          setImmediate(() => {
+            import('./modules/session-wake/index.js')
+              .then(({ wakeSession }) => wakeSession({ claude: queryClaudeSDK }, {
+                sessionId: appSessionId,
+                prompt: wakePrompt,
+                userId: ws?.userId || null,
+              }))
+              .catch((error) => {
+                console.error('[wake] wakeSession call failed for session', appSessionId, error);
+              });
           });
         } else {
           console.error('[wake] no appSessionId available, cannot deliver task_notification follow-up');
