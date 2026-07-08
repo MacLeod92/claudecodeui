@@ -202,6 +202,11 @@ async function handleChatSend(
     resume: Boolean(session.provider_session_id),
     cwd: clientOptions.cwd ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
+    // The app-level session id (stable across resumes, unlike the
+    // provider-native sessionId above which a brand-new session doesn't have
+    // yet). Provider runtimes use this to self-report background job
+    // completion back through POST /api/sessions/:sessionId/wake.
+    appSessionId: sessionId,
   };
 
   try {

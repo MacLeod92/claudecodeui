@@ -1,9 +1,37 @@
-import express, { type Request, type Response } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
 import { wakeSession, type ProviderSpawnFn } from './session-wake.service.js';
+import { consumeWakeToken } from './wake-token.service.js';
+
+type AuthMiddleware = (req: Request, res: Response, next: NextFunction) => unknown;
+
+/**
+ * Lets the wake endpoint be called two ways: a normal end-user JWT (the
+ * existing `authenticateToken` middleware, injected from the composition
+ * root same as `spawnFns`), or a one-time internal token minted for a single
+ * background job (see wake-token.service.ts) and presented via
+ * `X-Wake-Token`. The internal path never sees or needs the user's JWT.
+ */
+function createWakeAuthMiddleware(authenticateToken: AuthMiddleware): AuthMiddleware {
+  return (req, res, next) => {
+    const wakeToken = req.headers['x-wake-token'];
+    if (typeof wakeToken === 'string' && wakeToken.length > 0) {
+      const sessionId = typeof req.params.sessionId === 'string' ? req.params.sessionId : '';
+      if (!consumeWakeToken(sessionId, wakeToken)) {
+        res.status(401).json({ error: 'Invalid or expired wake token.' });
+        return;
+      }
+      (req as unknown as { user?: unknown }).user = { id: null, internal: true };
+      next();
+      return;
+    }
+
+    authenticateToken(req, res, next);
+  };
+}
 
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9._-]{1,120}$/;
 
@@ -35,11 +63,16 @@ function parsePrompt(body: unknown): string {
  * `spawnFns` comes from the same composition root (server/index.js) that
  * wires the identical map into the chat websocket server.
  */
-export function createSessionWakeRoutes(spawnFns: Record<LLMProvider, ProviderSpawnFn>) {
+export function createSessionWakeRoutes(
+  spawnFns: Record<LLMProvider, ProviderSpawnFn>,
+  authenticateToken: AuthMiddleware
+) {
   const router = express.Router();
+  const wakeAuthMiddleware = createWakeAuthMiddleware(authenticateToken);
 
   router.post(
     '/:sessionId/wake',
+    wakeAuthMiddleware,
     asyncHandler(async (req: Request, res: Response) => {
       const sessionId = parseSessionId(req.params.sessionId);
       const prompt = parsePrompt(req.body);
