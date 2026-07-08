@@ -643,21 +643,12 @@ async function queryClaudeSDK(command, options = {}, ws) {
       });
     }
 
-    // Diagnostic: leave CLAUDE_CODE_STREAM_CLOSE_TIMEOUT set for this
-    // query's full lifetime instead of restoring it right after construction.
-    // Restoring immediately was based on an unverified claim that the Query
-    // constructor reads it synchronously and once; background shell tasks
-    // were observed dying ~5-8s after backgrounding on this streaming code
-    // path (never reproduced on the old non-streaming query() path), which
-    // is consistent with something in the underlying CLI re-reading this env
-    // var later and finding it already reverted to its short/unset default.
-    const restoreStreamTimeout = () => {
-      if (prevStreamTimeout !== undefined) {
-        process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = prevStreamTimeout;
-      } else {
-        delete process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
-      }
-    };
+    // Restore immediately — Query constructor already captured the value
+    if (prevStreamTimeout !== undefined) {
+      process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = prevStreamTimeout;
+    } else {
+      delete process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
+    }
 
     // Track the query instance for abort capability
     if (capturedSessionId) {
@@ -674,7 +665,6 @@ async function queryClaudeSDK(command, options = {}, ws) {
     // arrives (crashed child, etc.) the timeout gives up and closes cleanly.
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     let backgroundWaitDeadline = null;
-    try {
     while (true) {
       const nextPromise = queryInstance.next();
       const waitMs = backgroundWaitDeadline ? Math.max(0, backgroundWaitDeadline - Date.now()) : null;
@@ -784,9 +774,6 @@ async function queryClaudeSDK(command, options = {}, ws) {
       backgroundWaitDeadline = lastBackgroundTasks.length > 0
         ? Date.now() + BACKGROUND_TASK_WAIT_TIMEOUT_MS
         : null;
-    }
-    } finally {
-      restoreStreamTimeout();
     }
 
     // Clean up session on completion
