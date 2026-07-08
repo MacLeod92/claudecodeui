@@ -531,6 +531,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
     const recordBackgroundTasks = async (input) => {
       lastBackgroundTasks = Array.isArray(input?.background_tasks) ? input.background_tasks : [];
+      console.log(`[wake] ${input?.hook_event_name} for session ${capturedSessionId || sessionId || 'NEW'}: background_tasks=`, JSON.stringify(lastBackgroundTasks));
       return {};
     };
 
@@ -700,6 +701,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
       if (done) {
         break;
       }
+      console.log(`[wake] message: type=${message.type} subtype=${message.subtype || ''}`);
 
       // Capture session ID from first message
       if (message.session_id && !capturedSessionId) {
@@ -722,6 +724,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
       }
 
       if (message.type === 'system' && message.subtype === 'task_notification') {
+        console.log(`[wake] task_notification for session ${capturedSessionId || sessionId || 'NEW'}: task_id=${message.task_id} status=${message.status} summary=${message.summary}`);
         backgroundWaitDeadline = null;
         const sid = capturedSessionId || sessionId || null;
         emitNotification(createNotificationEvent({
