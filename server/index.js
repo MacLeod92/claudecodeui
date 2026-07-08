@@ -220,9 +220,11 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 // Unified provider MCP routes (protected)
 app.use('/api/providers', authenticateToken, providerRoutes);
 
-// Headless session wake (protected) — lets a finished background job inject
-// a turn into an idle session; see modules/session-wake for why this exists.
-app.use('/api/sessions', authenticateToken, createSessionWakeRoutes(chatSpawnFns));
+// Headless session wake — lets a finished background job inject a turn into
+// an idle session, either via a normal user JWT or a one-time internal
+// X-Wake-Token minted for that job (see modules/session-wake); the route
+// itself decides which applies, so no blanket authenticateToken here.
+app.use('/api/sessions', createSessionWakeRoutes(chatSpawnFns, authenticateToken));
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);

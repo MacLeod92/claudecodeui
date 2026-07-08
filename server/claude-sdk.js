@@ -32,6 +32,7 @@ import {
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
+import { mintWakeToken } from './modules/session-wake/index.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -51,6 +52,41 @@ function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_M
   return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
     ? effort
     : undefined;
+}
+
+/**
+ * Rewrites a backgrounded Bash command so it self-reports completion to
+ * `POST /api/sessions/:sessionId/wake` once it finishes — the fix for
+ * background jobs finishing with no tab open to tell Claude about it. Runs
+ * invisibly: the model still just writes an ordinary `run_in_background`
+ * Bash call, and this rewrite happens
+ * server-side after that decision is already made, so no CLAUDE.md
+ * convention or model cooperation is needed.
+ *
+ * Auth for the callback is a one-time internal token (wake-token.service.ts)
+ * minted per invocation and scoped to this exact session — never the end
+ * user's JWT, which a shell command has no business holding.
+ */
+function wrapBackgroundBashForWake(toolName, input, appSessionId) {
+  if (toolName !== 'Bash' || !input || input.run_in_background !== true || !appSessionId) {
+    return input;
+  }
+  if (typeof input.command !== 'string' || input.command.trim().length === 0) {
+    return input;
+  }
+
+  const port = process.env.SERVER_PORT || 3001;
+  const token = mintWakeToken(appSessionId);
+  const wakeUrl = `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(appSessionId)}/wake`;
+
+  const wrappedCommand =
+    `{ ${input.command} ; }; __WAKE_STATUS=$?; ` +
+    `curl -fsS -m 5 -X POST ${JSON.stringify(wakeUrl)} ` +
+    `-H "Content-Type: application/json" -H "X-Wake-Token: ${token}" ` +
+    `-d "{\\"prompt\\":\\"A background command you started has finished, with exit code $__WAKE_STATUS.\\"}" ` +
+    `>/dev/null 2>&1 || true`;
+
+  return { ...input, command: wrappedCommand };
 }
 
 function createRequestId() {
@@ -458,7 +494,7 @@ async function loadMcpConfig(cwd) {
  * @returns {Promise<void>}
  */
 async function queryClaudeSDK(command, options = {}, ws) {
-  const { sessionId, sessionSummary } = options;
+  const { sessionId, sessionSummary, appSessionId } = options;
   let capturedSessionId = sessionId;
   let sessionCreatedSent = false;
 
@@ -530,7 +566,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
       if (!requiresInteraction) {
         if (sdkOptions.permissionMode === 'bypassPermissions') {
-          return { behavior: 'allow', updatedInput: input };
+          return { behavior: 'allow', updatedInput: wrapBackgroundBashForWake(toolName, input, appSessionId) };
         }
 
         const isDisallowed = (sdkOptions.disallowedTools || []).some(entry =>
@@ -544,7 +580,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
           matchesToolPermission(entry, toolName, input)
         );
         if (isAllowed) {
-          return { behavior: 'allow', updatedInput: input };
+          return { behavior: 'allow', updatedInput: wrapBackgroundBashForWake(toolName, input, appSessionId) };
         }
       }
 
@@ -591,7 +627,10 @@ async function queryClaudeSDK(command, options = {}, ws) {
             sdkOptions.disallowedTools = sdkOptions.disallowedTools.filter(entry => entry !== decision.rememberEntry);
           }
         }
-        return { behavior: 'allow', updatedInput: decision.updatedInput ?? input };
+        return {
+          behavior: 'allow',
+          updatedInput: wrapBackgroundBashForWake(toolName, decision.updatedInput ?? input, appSessionId),
+        };
       }
 
       return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };

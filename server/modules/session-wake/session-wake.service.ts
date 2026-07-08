@@ -88,6 +88,7 @@ export async function wakeSession(
     resume: Boolean(session.provider_session_id),
     cwd: session.project_path ?? undefined,
     projectPath: session.project_path ?? undefined,
+    appSessionId: input.sessionId,
   };
 
   void spawnFn(input.prompt, runtimeOptions, run.writer)
