@@ -32,7 +32,6 @@ import {
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
-import { mintWakeToken } from './modules/session-wake/index.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -45,6 +44,11 @@ const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEO
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
+// How long to keep a turn's query instance resident after its Stop hook
+// still shows in-flight background_tasks, waiting for a task_notification
+// message on the same stream.
+const BACKGROUND_TASK_WAIT_TIMEOUT_MS = parseInt(process.env.CLAUDE_BACKGROUND_TASK_WAIT_TIMEOUT_MS, 10) || 10 * 60 * 1000;
+
 function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_MODELS) {
   const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;
   const allowedEfforts = selectedModel?.effort?.values
@@ -52,41 +56,6 @@ function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_M
   return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
     ? effort
     : undefined;
-}
-
-/**
- * Rewrites a backgrounded Bash command so it self-reports completion to
- * `POST /api/sessions/:sessionId/wake` once it finishes — the fix for
- * background jobs finishing with no tab open to tell Claude about it. Runs
- * invisibly: the model still just writes an ordinary `run_in_background`
- * Bash call, and this rewrite happens
- * server-side after that decision is already made, so no CLAUDE.md
- * convention or model cooperation is needed.
- *
- * Auth for the callback is a one-time internal token (wake-token.service.ts)
- * minted per invocation and scoped to this exact session — never the end
- * user's JWT, which a shell command has no business holding.
- */
-function wrapBackgroundBashForWake(toolName, input, appSessionId) {
-  if (toolName !== 'Bash' || !input || input.run_in_background !== true || !appSessionId) {
-    return input;
-  }
-  if (typeof input.command !== 'string' || input.command.trim().length === 0) {
-    return input;
-  }
-
-  const port = process.env.SERVER_PORT || 3001;
-  const token = mintWakeToken(appSessionId);
-  const wakeUrl = `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(appSessionId)}/wake`;
-
-  const wrappedCommand =
-    `{ ${input.command} ; }; __WAKE_STATUS=$?; ` +
-    `curl -fsS -m 5 -X POST ${JSON.stringify(wakeUrl)} ` +
-    `-H "Content-Type: application/json" -H "X-Wake-Token: ${token}" ` +
-    `-d "{\\"prompt\\":\\"A background command you started has finished, with exit code $__WAKE_STATUS.\\"}" ` +
-    `>/dev/null 2>&1 || true`;
-
-  return { ...input, command: wrappedCommand };
 }
 
 function createRequestId() {
@@ -400,22 +369,41 @@ function extractTokenBudget(sdkMessage) {
 /**
  * Builds the SDK `prompt` payload for one turn.
  *
- * Plain text turns pass the string through unchanged. Turns with image
- * attachments use the SDK's streaming-input mode: a single SDKUserMessage
- * whose content carries the prompt text plus one base64 `image` block per
- * attachment (read from the global `~/.cloudcli/assets` folder).
+ * Always uses the SDK's streaming-input mode (a single-message async
+ * generator) rather than a bare string, even for plain text turns with no
+ * image attachments. Control-request methods on the returned `Query`
+ * instance (`backgroundTasks()`, `streamInput()`) are only available in
+ * streaming mode — needed so a turn that backgrounds a shell command can
+ * later receive its `task_notification` and hand off a follow-up on the same
+ * still-open query instance instead of losing the notification when the
+ * turn's process exits.
  *
  * @param {string} command - User prompt
  * @param {Array} images - Image descriptors ({ path, name?, mimeType? })
  * @param {string} cwd - Project working directory image paths resolve against
- * @returns {Promise<string|AsyncIterable>} SDK prompt payload
+ * @returns {Promise<AsyncIterable>} SDK prompt payload
  */
 async function buildPromptPayload(command, images, cwd) {
-  if (normalizeImageDescriptors(images).length === 0) {
-    return command;
-  }
+  const hasImages = normalizeImageDescriptors(images).length > 0;
+  const content = hasImages ? await buildClaudeUserContent(command, images, cwd) : command;
+  return (async function* () {
+    yield {
+      type: 'user',
+      message: {
+        role: 'user',
+        content
+      },
+      parent_tool_use_id: null,
+      timestamp: new Date().toISOString()
+    };
+  })();
+}
 
-  const content = await buildClaudeUserContent(command, images, cwd);
+/**
+ * Wraps a single SDKUserMessage-shaped payload as a one-shot async iterable
+ * suitable for `Query#streamInput()`.
+ */
+function singleMessageStream(content) {
   return (async function* () {
     yield {
       type: 'user',
@@ -506,6 +494,13 @@ async function queryClaudeSDK(command, options = {}, ws) {
     });
   };
 
+  // Populated by the Stop/SubagentStop hooks below with whatever
+  // `background_tasks` the SDK reports as still in flight at the moment the
+  // model stops generating. Read by the message loop after it observes a
+  // Stop to decide whether to keep the query instance open and wait for a
+  // task_notification, instead of letting the turn end immediately.
+  let lastBackgroundTasks = [];
+
   try {
     const resolvedModel = await providerModelsService.resolveResumeModel(
       'claude',
@@ -530,12 +525,18 @@ async function queryClaudeSDK(command, options = {}, ws) {
       sdkOptions.mcpServers = mcpServers;
     }
 
-    // Turns with image attachments switch to streaming input so the images
-    // ride along as real content blocks. Built per query attempt because an
-    // async generator cannot be replayed once consumed.
+    // Built per query attempt because an async generator cannot be replayed
+    // once consumed.
     const createPrompt = () => buildPromptPayload(command, options.images, options.cwd);
 
+    const recordBackgroundTasks = async (input) => {
+      lastBackgroundTasks = Array.isArray(input?.background_tasks) ? input.background_tasks : [];
+      return {};
+    };
+
     sdkOptions.hooks = {
+      Stop: [{ matcher: '', hooks: [recordBackgroundTasks] }],
+      SubagentStop: [{ matcher: '', hooks: [recordBackgroundTasks] }],
       Notification: [{
         matcher: '',
         hooks: [async (input) => {
@@ -566,7 +567,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
       if (!requiresInteraction) {
         if (sdkOptions.permissionMode === 'bypassPermissions') {
-          return { behavior: 'allow', updatedInput: wrapBackgroundBashForWake(toolName, input, appSessionId) };
+          return { behavior: 'allow', updatedInput: input };
         }
 
         const isDisallowed = (sdkOptions.disallowedTools || []).some(entry =>
@@ -580,7 +581,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
           matchesToolPermission(entry, toolName, input)
         );
         if (isAllowed) {
-          return { behavior: 'allow', updatedInput: wrapBackgroundBashForWake(toolName, input, appSessionId) };
+          return { behavior: 'allow', updatedInput: input };
         }
       }
 
@@ -629,7 +630,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
         }
         return {
           behavior: 'allow',
-          updatedInput: wrapBackgroundBashForWake(toolName, decision.updatedInput ?? input, appSessionId),
+          updatedInput: decision.updatedInput ?? input,
         };
       }
 
@@ -669,9 +670,37 @@ async function queryClaudeSDK(command, options = {}, ws) {
       addSession(capturedSessionId, queryInstance, ws);
     }
 
-    // Process streaming messages
+    // Process streaming messages. Driven manually (rather than a plain
+    // `for await`) so that once a Stop/SubagentStop hook reports in-flight
+    // background_tasks, we can race the next message against a bounded
+    // timeout instead of awaiting the iterator forever — if the model
+    // backgrounded a shell command or subagent, the SDK keeps this query
+    // instance's underlying process resident and eventually yields a
+    // `task_notification` message on this same stream; if that never
+    // arrives (crashed child, etc.) the timeout gives up and closes cleanly.
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
-    for await (const message of queryInstance) {
+    let backgroundWaitDeadline = null;
+    while (true) {
+      const nextPromise = queryInstance.next();
+      const waitMs = backgroundWaitDeadline ? Math.max(0, backgroundWaitDeadline - Date.now()) : null;
+      const step = waitMs === null
+        ? await nextPromise
+        : await Promise.race([
+          nextPromise,
+          new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), waitMs))
+        ]);
+
+      if (step.timedOut) {
+        console.log('Timed out waiting for background task_notification, closing session:', capturedSessionId || 'NEW');
+        queryInstance.close();
+        break;
+      }
+
+      const { value: message, done } = step;
+      if (done) {
+        break;
+      }
+
       // Capture session ID from first message
       if (message.session_id && !capturedSessionId) {
 
@@ -690,6 +719,24 @@ async function queryClaudeSDK(command, options = {}, ws) {
         }
       } else {
         // session_id already captured
+      }
+
+      if (message.type === 'system' && message.subtype === 'task_notification') {
+        backgroundWaitDeadline = null;
+        const sid = capturedSessionId || sessionId || null;
+        emitNotification(createNotificationEvent({
+          provider: 'claude',
+          sessionId: sid,
+          kind: 'action_required',
+          code: 'background_task.finished',
+          meta: { sessionName: sessionSummary, status: message.status, summary: message.summary },
+          severity: 'info',
+          requiresUserAction: false,
+          dedupeKey: `claude:task_notification:${sid || 'none'}:${message.task_id}`
+        }));
+        const wakePrompt = `A background task you started has finished (status: ${message.status}). Summary: ${message.summary}`;
+        await queryInstance.streamInput(singleMessageStream(wakePrompt));
+        continue;
       }
 
       // Transform and normalize message via adapter
@@ -711,6 +758,14 @@ async function queryClaudeSDK(command, options = {}, ws) {
       if (tokenBudgetData) {
         ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       }
+
+      // Stop/SubagentStop hooks (recordBackgroundTasks) run around this
+      // point in the underlying protocol; check what they last saw so the
+      // next iteration knows whether to wait (bounded) for a
+      // task_notification instead of treating the turn as finished.
+      backgroundWaitDeadline = lastBackgroundTasks.length > 0
+        ? Date.now() + BACKGROUND_TASK_WAIT_TIMEOUT_MS
+        : null;
     }
 
     // Clean up session on completion
