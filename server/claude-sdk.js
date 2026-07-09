@@ -32,6 +32,7 @@ import {
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
+import { mintWakeToken } from './modules/session-wake/index.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -48,6 +49,49 @@ const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode'])
 // still shows in-flight background_tasks, waiting for a task_notification
 // message on the same stream. See .notes/handoff-wake-idle-session.md.
 const BACKGROUND_TASK_WAIT_TIMEOUT_MS = parseInt(process.env.CLAUDE_BACKGROUND_TASK_WAIT_TIMEOUT_MS, 10) || 10 * 60 * 1000;
+
+/**
+ * Rewrites a `run_in_background: true` Bash tool call so the actual work is
+ * detached from the SDK's own background-task supervisor, which kills tracked
+ * background children ~5s after the turn's `result` message (see
+ * .notes/handoff-wake-idle-session.md, "Bug 1 root-caused"). The work is
+ * re-launched via `nohup ... & disown` — invisible to that supervisor, so it
+ * survives turn teardown — and self-reports completion by POSTing to
+ * /api/sessions/:id/wake with a single-use minted token, which wakes the
+ * session as a new turn. The rewritten call runs as an ordinary foreground
+ * Bash call that returns immediately, so the SDK never tracks (or kills) it;
+ * dropping the run_in_background flag here is load-bearing, not cosmetic —
+ * a tracked wrapper would fire a spurious `stopped` task_notification.
+ */
+function detachBackgroundBashForWake(toolName, input, appSessionId) {
+  if (toolName !== 'Bash' || !input || input.run_in_background !== true || !appSessionId) {
+    return input;
+  }
+  if (typeof input.command !== 'string' || input.command.trim().length === 0) {
+    return input;
+  }
+
+  const port = process.env.SERVER_PORT || 3001;
+  const token = mintWakeToken(appSessionId);
+  const wakeUrl = `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(appSessionId)}/wake`;
+  const logPath = path.join(os.tmpdir(), `claude-bg-${crypto.randomBytes(6).toString('hex')}.log`);
+
+  // Trailing newline before `)` guards against the original command ending in
+  // a `#` comment swallowing the close paren.
+  const innerScript =
+    `( ${input.command}\n); __WAKE_STATUS=$?; ` +
+    `curl -fsS -m 10 -X POST ${JSON.stringify(wakeUrl)} ` +
+    `-H "Content-Type: application/json" -H "X-Wake-Token: ${token}" ` +
+    `-d "{\\"prompt\\":\\"A background command you started has finished with exit code $__WAKE_STATUS. Its output was captured to ${logPath}.\\"}" ` +
+    `>/dev/null 2>&1 || true`;
+  const singleQuoted = `'${innerScript.replace(/'/g, `'\\''`)}'`;
+
+  const command =
+    `nohup bash -c ${singleQuoted} > ${JSON.stringify(logPath)} 2>&1 < /dev/null & disown; ` +
+    `echo "Command detached to background (pid $!). Output: ${logPath}. This session will be woken with the exit code when it finishes."`;
+
+  return { ...input, command, run_in_background: false };
+}
 
 function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_MODELS) {
   const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;
@@ -552,7 +596,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
       if (!requiresInteraction) {
         if (sdkOptions.permissionMode === 'bypassPermissions') {
-          return { behavior: 'allow', updatedInput: input };
+          return { behavior: 'allow', updatedInput: detachBackgroundBashForWake(toolName, input, appSessionId) };
         }
 
         const isDisallowed = (sdkOptions.disallowedTools || []).some(entry =>
@@ -566,7 +610,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
           matchesToolPermission(entry, toolName, input)
         );
         if (isAllowed) {
-          return { behavior: 'allow', updatedInput: input };
+          return { behavior: 'allow', updatedInput: detachBackgroundBashForWake(toolName, input, appSessionId) };
         }
       }
 
@@ -615,7 +659,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
         }
         return {
           behavior: 'allow',
-          updatedInput: decision.updatedInput ?? input,
+          updatedInput: detachBackgroundBashForWake(toolName, decision.updatedInput ?? input, appSessionId),
         };
       }
 
