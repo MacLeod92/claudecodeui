@@ -527,6 +527,11 @@ async function queryClaudeSDK(command, options = {}, ws) {
   // Stop to decide whether to keep the query instance open and wait for a
   // task_notification, instead of letting the turn end immediately.
   let lastBackgroundTasks = [];
+  // Accumulates every task id the SDK has ever reported via Stop/SubagentStop
+  // background_tasks. The SDK also emits `task_notification` for slow ordinary
+  // (non-backgrounded) tool calls that were never reported here — those must
+  // not be treated as a real background-task completion.
+  const knownBackgroundTaskIds = new Set();
 
   try {
     const resolvedModel = await providerModelsService.resolveResumeModel(
@@ -560,6 +565,11 @@ async function queryClaudeSDK(command, options = {}, ws) {
       lastBackgroundTasks = Array.isArray(input?.background_tasks) ? input.background_tasks : [];
       if (lastBackgroundTasks.length > 0) {
         console.log(`[wake] ${input?.hook_event_name} for session ${capturedSessionId || sessionId || 'NEW'}: background_tasks=`, JSON.stringify(lastBackgroundTasks));
+        for (const task of lastBackgroundTasks) {
+          if (task?.id) {
+            knownBackgroundTaskIds.add(task.id);
+          }
+        }
       }
       return {};
     };
@@ -764,7 +774,16 @@ async function queryClaudeSDK(command, options = {}, ws) {
         // session_id already captured
       }
 
-      if (message.type === 'system' && message.subtype === 'task_notification') {
+      if (message.type === 'system' && message.subtype === 'task_notification' && !knownBackgroundTaskIds.has(message.task_id)) {
+        // The SDK also emits task_notification for ordinary, non-backgrounded
+        // tool calls it decided (on its own, undocumented heuristic) to track
+        // internally — e.g. a plain foreground Bash call that just ran long.
+        // Only react to notifications for task ids we actually saw reported
+        // as in-flight via Stop/SubagentStop background_tasks; anything else
+        // falls through to normal message handling below instead of ending
+        // the turn and firing a phantom wake.
+        console.log(`[wake] ignoring task_notification for unknown task_id=${message.task_id} (never reported via background_tasks): status=${message.status} summary=${message.summary}`);
+      } else if (message.type === 'system' && message.subtype === 'task_notification') {
         console.log(`[wake] task_notification for session ${capturedSessionId || sessionId || 'NEW'}: task_id=${message.task_id} status=${message.status} summary=${message.summary}`);
         backgroundWaitDeadline = null;
         const sid = capturedSessionId || sessionId || null;
