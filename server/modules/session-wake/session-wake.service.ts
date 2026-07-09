@@ -3,6 +3,8 @@ import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { AnyRecord, LLMProvider, RealtimeClientConnection } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
+import { getRememberedSessionOptions } from './session-options-cache.service.js';
+
 // `writer` is intentionally untyped (`AnyRecord`'s index signature covers
 // it): each provider runtime's actual writer parameter type is narrower
 // (and mutually incompatible) than `unknown` under contravariance, so this
@@ -84,6 +86,12 @@ export async function wakeSession(
   }
 
   const runtimeOptions: AnyRecord = {
+    // Carries forward permissionMode/toolsSettings/model/effort from the
+    // last real chat.send on this session — without this, a headless wake
+    // would silently drop things like an `auto` permission mode back to
+    // normal per-tool approval, since none of that is persisted anywhere
+    // else and this run has no live client message to read it from.
+    ...getRememberedSessionOptions(input.sessionId),
     sessionId: session.provider_session_id ?? undefined,
     resume: Boolean(session.provider_session_id),
     cwd: session.project_path ?? undefined,
