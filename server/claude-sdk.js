@@ -519,13 +519,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
       return {};
     };
 
-    // DIAGNOSTIC: Stop/SubagentStop hooks temporarily disabled to test
-    // whether their mere registration changes how the CLI supervises a
-    // freshly-backgrounded child process (see .notes/handoff doc). Do not
-    // ship this — it defeats the whole session-wake feature.
     sdkOptions.hooks = {
-      // Stop: [{ matcher: '', hooks: [recordBackgroundTasks] }],
-      // SubagentStop: [{ matcher: '', hooks: [recordBackgroundTasks] }],
+      Stop: [{ matcher: '', hooks: [recordBackgroundTasks] }],
+      SubagentStop: [{ matcher: '', hooks: [recordBackgroundTasks] }],
       Notification: [{
         matcher: '',
         hooks: [async (input) => {
