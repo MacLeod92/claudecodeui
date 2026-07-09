@@ -562,9 +562,23 @@ async function queryClaudeSDK(command, options = {}, ws) {
       return {};
     };
 
+    const rewriteBackgroundBashPreToolUse = async (input) => {
+      if (input?.tool_name !== 'Bash' || !input?.tool_input?.run_in_background || !appSessionId) {
+        return {};
+      }
+      const updatedInput = detachBackgroundBashForWake(input.tool_name, input.tool_input, appSessionId);
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          updatedInput,
+        }
+      };
+    };
+
     sdkOptions.hooks = {
       Stop: [{ matcher: '', hooks: [recordBackgroundTasks] }],
       SubagentStop: [{ matcher: '', hooks: [recordBackgroundTasks] }],
+      PreToolUse: [{ matcher: 'Bash', hooks: [rewriteBackgroundBashPreToolUse] }],
       Notification: [{
         matcher: '',
         hooks: [async (input) => {
