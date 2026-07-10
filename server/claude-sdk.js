@@ -86,7 +86,7 @@ function detachBackgroundBashForWake(toolName, input, appSessionId) {
   const singleQuoted = `'${innerScript.replace(/'/g, `'\\''`)}'`;
 
   const command =
-    `nohup bash -c ${singleQuoted} > ${JSON.stringify(logPath)} 2>&1 < /dev/null & disown; ` +
+    `setsid nohup bash -c ${singleQuoted} > ${JSON.stringify(logPath)} 2>&1 < /dev/null & disown; ` +
     `echo "Command detached to background (pid $!). Output: ${logPath}. This session will be woken with the exit code when it finishes."`;
 
   return { ...input, command, run_in_background: false };
