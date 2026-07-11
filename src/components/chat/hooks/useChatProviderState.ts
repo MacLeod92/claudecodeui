@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { authenticatedFetch } from '../../../utils/api';
+import { api, authenticatedFetch } from '../../../utils/api';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import type {
   ProjectSession,
@@ -43,6 +43,17 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   cursor: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   codex: ['default', 'acceptEdits', 'bypassPermissions'],
   opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+};
+
+/**
+ * Server-synced shape of the `permissionMode` key inside the generic
+ * `/api/user/preferences` blob. Mirrors the two-tier localStorage cache
+ * (`permissionMode-${sessionId}` / `permissionMode-last-${provider}`) so the
+ * same fallback chain works whether a value came from the network or disk.
+ */
+type StoredPermissionModePreferences = {
+  sessions: Record<string, string>;
+  lastByProvider: Partial<Record<LLMProvider, string>>;
 };
 
 type ProviderCapabilities = {
@@ -120,6 +131,46 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [providerCapabilities, setProviderCapabilities] = useState<
     Partial<Record<LLMProvider, ProviderCapabilities>> | null
   >(null);
+
+  /**
+   * Null until `GET /api/user/preferences` resolves (success or failure).
+   * Once resolved, this is treated as authoritative over localStorage for
+   * permission mode restoration; localStorage remains the instant-paint
+   * fallback while the request is in flight or if it fails.
+   */
+  const [serverPermissionModes, setServerPermissionModes] = useState<StoredPermissionModePreferences | null>(null);
+  const preferencesResolvedRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPreferences = async () => {
+      try {
+        const response = await api.user.getPreferences();
+        const body = await response.json();
+        if (cancelled) {
+          return;
+        }
+
+        const stored = body?.preferences?.permissionMode;
+        setServerPermissionModes({
+          sessions: (stored && typeof stored.sessions === 'object' && stored.sessions) || {},
+          lastByProvider: (stored && typeof stored.lastByProvider === 'object' && stored.lastByProvider) || {},
+        });
+      } catch (error) {
+        console.error('Error loading user preferences:', error);
+      } finally {
+        if (!cancelled) {
+          preferencesResolvedRef.current = true;
+        }
+      }
+    };
+
+    void loadPreferences();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [providerModelCatalog, setProviderModelCatalog] = useState<
     Partial<Record<LLMProvider, ProviderModelsDefinition>>
@@ -432,19 +483,99 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   useEffect(() => {
     const validModes = getPermissionModesForProvider(provider);
+
+    // Server values (once resolved) are authoritative; localStorage is only
+    // the instant-paint fallback for values the server hasn't synced yet
+    // (in flight, offline, or never written from this browser).
+    const serverSessionMode = selectedSession?.id
+      ? serverPermissionModes?.sessions?.[selectedSession.id]
+      : undefined;
     const sessionSavedMode = selectedSession?.id
       ? (localStorage.getItem(`permissionMode-${selectedSession.id}`) as PermissionMode | null)
+      : null;
+    const validServerSessionMode = serverSessionMode && validModes.includes(serverSessionMode as PermissionMode)
+      ? (serverSessionMode as PermissionMode)
+      : null;
+    const validSessionSavedMode = sessionSavedMode && validModes.includes(sessionSavedMode)
+      ? sessionSavedMode
+      : null;
+    // Whether this session already has an explicit mode of its own (in
+    // either layer), as opposed to one it would only inherit from the
+    // shared per-provider fallback below. Prefer the server's copy over a
+    // possibly-stale local one when both exist.
+    const ownSessionMode = validServerSessionMode ?? validSessionSavedMode;
+
+    const serverProviderMode = serverPermissionModes?.lastByProvider?.[provider];
+    const validServerProviderMode = serverProviderMode && validModes.includes(serverProviderMode as PermissionMode)
+      ? (serverProviderMode as PermissionMode)
       : null;
     // Fall back to the last mode picked for this provider: a brand-new chat
     // only receives its session id after the first send, so without this the
     // mode chosen beforehand would snap back to the default as soon as the
     // session id appears.
     const providerSavedMode = localStorage.getItem(`permissionMode-last-${provider}`) as PermissionMode | null;
-    const savedMode = [sessionSavedMode, providerSavedMode].find(
-      (mode): mode is PermissionMode => Boolean(mode && validModes.includes(mode)),
-    );
-    setPermissionMode(savedMode ?? getDefaultPermissionModeForProvider(provider));
-  }, [selectedSession?.id, provider, getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
+    const validProviderSavedMode = providerSavedMode && validModes.includes(providerSavedMode)
+      ? providerSavedMode
+      : null;
+
+    const resolvedMode = ownSessionMode
+      ?? validServerProviderMode
+      ?? validProviderSavedMode
+      ?? getDefaultPermissionModeForProvider(provider);
+    setPermissionMode(resolvedMode);
+
+    // Keep the shared per-provider cache in step with the server once it
+    // has a valid value, independent of whether this particular session has
+    // its own entry.
+    if (validServerProviderMode && validServerProviderMode !== providerSavedMode) {
+      localStorage.setItem(`permissionMode-last-${provider}`, validServerProviderMode);
+    }
+
+    if (!selectedSession?.id) {
+      return;
+    }
+
+    if (!ownSessionMode) {
+      // Seed this session's own entry, in both layers, in this same code
+      // path, so it becomes independently sticky from now on instead of
+      // continuing to live-track whatever mode is last picked elsewhere
+      // (which is exactly what "bleeds" a change across sessions). A
+      // stale/invalid stored value counts as "no session mode" and gets
+      // reseeded here too.
+      localStorage.setItem(`permissionMode-${selectedSession.id}`, resolvedMode);
+
+      // Same guard cyclePermissionMode uses before PATCHing: writing the
+      // server sessions map before the initial GET has resolved would
+      // clobber it with a partial view built without knowing what else is
+      // already stored there for other sessions/providers.
+      if (preferencesResolvedRef.current) {
+        const sessionId = selectedSession.id;
+        setServerPermissionModes((previous) => {
+          const next: StoredPermissionModePreferences = {
+            sessions: { ...(previous?.sessions ?? {}), [sessionId]: resolvedMode },
+            lastByProvider: { ...(previous?.lastByProvider ?? {}) },
+          };
+
+          void api.user.patchPreferences({ permissionMode: next }).catch((error) => {
+            console.error('Error syncing permission mode preference:', error);
+          });
+
+          return next;
+        });
+      }
+    } else if (validServerSessionMode && validServerSessionMode !== sessionSavedMode) {
+      // The session's own entry already exists server-side and differs from
+      // the local cache (e.g. changed from another device) — refresh the
+      // cache so it doesn't keep serving a stale value while offline.
+      localStorage.setItem(`permissionMode-${selectedSession.id}`, validServerSessionMode);
+    }
+  }, [
+    selectedSession?.id,
+    provider,
+    serverPermissionModes,
+    getDefaultPermissionModeForProvider,
+    getPermissionModesForProvider,
+  ]);
 
   useEffect(() => {
     if (!selectedSession?.__provider || selectedSession.__provider === provider) {
@@ -500,6 +631,30 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     if (selectedSession?.id) {
       localStorage.setItem(`permissionMode-${selectedSession.id}`, nextMode);
     }
+
+    // Skip the server sync until the initial GET has resolved: the PATCH
+    // shallow-merges only at the top level, so sending a `permissionMode`
+    // object built before we know the existing sessions/lastByProvider map
+    // would clobber values already stored for other sessions/providers.
+    if (!preferencesResolvedRef.current) {
+      return;
+    }
+
+    setServerPermissionModes((previous) => {
+      const next: StoredPermissionModePreferences = {
+        sessions: { ...(previous?.sessions ?? {}) },
+        lastByProvider: { ...(previous?.lastByProvider ?? {}), [provider]: nextMode },
+      };
+      if (selectedSession?.id) {
+        next.sessions[selectedSession.id] = nextMode;
+      }
+
+      void api.user.patchPreferences({ permissionMode: next }).catch((error) => {
+        console.error('Error syncing permission mode preference:', error);
+      });
+
+      return next;
+    });
   }, [permissionMode, provider, selectedSession?.id, getPermissionModesForProvider]);
 
   const resolvePermissionModeForProvider = useCallback((

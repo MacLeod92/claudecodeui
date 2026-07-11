@@ -255,6 +255,12 @@ export const api = {
       authenticatedFetch('/api/user/complete-onboarding', {
         method: 'POST',
       }),
+    getPreferences: () => authenticatedFetch('/api/user/preferences'),
+    patchPreferences: (partialPreferences) =>
+      authenticatedFetch('/api/user/preferences', {
+        method: 'PATCH',
+        body: JSON.stringify(partialPreferences),
+      }),
   },
 
   // Generic GET method for any endpoint
