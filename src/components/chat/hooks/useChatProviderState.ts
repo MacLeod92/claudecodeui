@@ -132,6 +132,22 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   const providerModelsRequestIdRef = useRef(0);
 
+  const setProviderModelState = (targetProvider: LLMProvider, model: string) => {
+    if (targetProvider === 'claude') {
+      setClaudeModel(model);
+      return;
+    }
+    if (targetProvider === 'cursor') {
+      setCursorModel(model);
+      return;
+    }
+    if (targetProvider === 'codex') {
+      setCodexModel(model);
+      return;
+    }
+    setOpenCodeModel(model);
+  };
+
   const setStoredProviderModel = useCallback((targetProvider: LLMProvider, model: string) => {
     if (targetProvider === 'claude') {
       setClaudeModel(model);
@@ -357,6 +373,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     opencode: opencodeModel,
   }), [claudeModel, cursorModel, codexModel, opencodeModel]);
 
+  // Read inside the session-pin effect below without forcing it to re-run
+  // (and re-pin) on every model change — it should only run when the
+  // selected session or provider changes.
+  const providerModelsRef = useRef(providerModels);
+  providerModelsRef.current = providerModels;
+
   useEffect(() => {
     const claude = providerModelCatalog.claude;
     if (claude) {
@@ -429,6 +451,46 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       setProviderEfforts((previous) => ({ ...previous, ...nextEfforts }));
     }
   }, [providerEfforts, providerModels, reconcileStoredEffort]);
+
+  // Each session pins its own model once seen on this client, so a model
+  // picked while a *different* session is open (or a brand-new chat's
+  // default) can never bleed into this one. The per-session key is checked
+  // first for an instant restore, then reconciled against the backend's
+  // view of the session's actual active model (authoritative for changes
+  // made via /models on this or another client).
+  useEffect(() => {
+    const sessionId = selectedSession?.id?.trim();
+    if (!sessionId) {
+      return;
+    }
+
+    let cancelled = false;
+    const storageKey = `${provider}-model-session-${sessionId}`;
+    const cached = localStorage.getItem(storageKey);
+
+    if (cached) {
+      setProviderModelState(provider, cached);
+    } else {
+      localStorage.setItem(storageKey, providerModelsRef.current[provider]);
+    }
+
+    authenticatedFetch(`/api/providers/${provider}/sessions/${encodeURIComponent(sessionId)}/active-model`)
+      .then((response) => response.json())
+      .then((body: { success?: boolean; data?: { model?: string } }) => {
+        if (cancelled || !body.success || !body.data?.model) {
+          return;
+        }
+        localStorage.setItem(storageKey, body.data.model);
+        setProviderModelState(provider, body.data.model);
+      })
+      .catch((error) => {
+        console.error('Error loading active session model:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSession?.id, provider]);
 
   useEffect(() => {
     const validModes = getPermissionModesForProvider(provider);
@@ -540,10 +602,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       throw new Error('Unable to change the active model for this session.');
     }
 
+    const resolvedModel = body.data.model || model;
+    localStorage.setItem(`${targetProvider}-model-session-${normalizedSessionId}`, resolvedModel);
+    setProviderModelState(targetProvider, resolvedModel);
+
     return {
       scope: 'session' as const,
       changed: body.data.changed === true,
-      model: body.data.model || model,
+      model: resolvedModel,
     };
   }, [setStoredProviderModel]);
 
