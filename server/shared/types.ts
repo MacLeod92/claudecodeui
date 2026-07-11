@@ -32,6 +32,13 @@ export type AnyRecord = Record<string, any>;
 export type RealtimeClientConnection = {
   readyState: number;
   send(data: string): void;
+  /**
+   * Id of the authenticated user that owns this connection, resolved the same
+   * way as `readRequestUserId` in chat-websocket.service.ts. `null` when the
+   * connection has no resolvable user (unauthenticated or a differently-authed
+   * path) — such connections simply never match `broadcastToUser` filters.
+   */
+  userId?: string | number | null;
 };
 
 /**
