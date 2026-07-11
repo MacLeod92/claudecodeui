@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { api, authenticatedFetch } from '../../../utils/api';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import type {
@@ -171,6 +172,35 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       cancelled = true;
     };
   }, []);
+
+  const { subscribe } = useWebSocket();
+
+  // Live cross-device sync: another device/tab PATCHing its own preferences
+  // triggers a `preferences_updated` broadcast (scoped to this user, see
+  // `broadcastToUser` in websocket-state.service.ts) that we fold into the
+  // same state the restore effect below already treats as authoritative —
+  // no separate merge logic needed, the existing per-session/per-provider
+  // resolution just re-runs against the fresher data.
+  useEffect(() => {
+    return subscribe((event) => {
+      if (event.kind !== 'preferences_updated') {
+        return;
+      }
+
+      const stored = (event as { preferences?: { permissionMode?: unknown } }).preferences?.permissionMode as
+        | { sessions?: unknown; lastByProvider?: unknown }
+        | undefined;
+      if (!stored) {
+        return;
+      }
+
+      setServerPermissionModes({
+        sessions: (stored.sessions && typeof stored.sessions === 'object' ? stored.sessions : {}) as Record<string, string>,
+        lastByProvider: (stored.lastByProvider && typeof stored.lastByProvider === 'object' ? stored.lastByProvider : {}) as Partial<Record<LLMProvider, string>>,
+      });
+      preferencesResolvedRef.current = true;
+    });
+  }, [subscribe]);
 
   const [providerModelCatalog, setProviderModelCatalog] = useState<
     Partial<Record<LLMProvider, ProviderModelsDefinition>>
