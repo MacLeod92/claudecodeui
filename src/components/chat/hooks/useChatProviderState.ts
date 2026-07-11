@@ -458,32 +458,22 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       return;
     }
 
-    let cancelled = false;
     const storageKey = `${provider}-model-session-${sessionId}`;
     const cached = localStorage.getItem(storageKey);
 
     if (cached) {
       setProviderModelState(provider, cached);
-    } else {
-      localStorage.setItem(storageKey, providerModelsRef.current[provider]);
+      return;
     }
 
-    authenticatedFetch(`/api/providers/${provider}/sessions/${encodeURIComponent(sessionId)}/active-model`)
-      .then((response) => response.json())
-      .then((body: { success?: boolean; data?: { model?: string } }) => {
-        if (cancelled || !body.success || !body.data?.model) {
-          return;
-        }
-        localStorage.setItem(storageKey, body.data.model);
-        setProviderModelState(provider, body.data.model);
-      })
-      .catch((error) => {
-        console.error('Error loading active session model:', error);
-      });
-
-    return () => {
-      cancelled = true;
-    };
+    // No cache yet: this is the first time this client has seen the
+    // session. Lock in whatever model is currently active locally rather
+    // than asking the backend — for a session that was JUST created in this
+    // tab, the first message (and its jsonl-recorded model) may not have
+    // landed yet, and querying the backend here would race that write and
+    // silently fall back to the provider's bare default, clobbering the
+    // model the user just picked.
+    localStorage.setItem(storageKey, providerModelsRef.current[provider]);
   }, [selectedSession?.id, provider]);
 
   useEffect(() => {
