@@ -1,7 +1,7 @@
 import express from 'express';
 // cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution.
 import spawn from 'cross-spawn';
-import { userDb } from '../modules/database/index.js';
+import { uiPreferencesDb, userDb } from '../modules/database/index.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { getSystemGitConfig } from '../utils/gitConfig.js';
 
@@ -118,6 +118,31 @@ router.get('/onboarding-status', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error checking onboarding status:', error);
     res.status(500).json({ error: 'Failed to check onboarding status' });
+  }
+});
+
+router.get('/preferences', authenticateToken, async (req, res) => {
+  try {
+    const preferences = uiPreferencesDb.getPreferences(req.user.id) || {};
+    res.json({ success: true, preferences });
+  } catch (error) {
+    console.error('Error getting user preferences:', error);
+    res.status(500).json({ error: 'Failed to get user preferences' });
+  }
+});
+
+router.patch('/preferences', authenticateToken, async (req, res) => {
+  try {
+    const partialPreferences = req.body;
+    if (!partialPreferences || typeof partialPreferences !== 'object' || Array.isArray(partialPreferences)) {
+      return res.status(400).json({ error: 'Request body must be an object' });
+    }
+
+    const preferences = uiPreferencesDb.updatePreferences(req.user.id, partialPreferences);
+    res.json({ success: true, preferences });
+  } catch (error) {
+    console.error('Error updating user preferences:', error);
+    res.status(500).json({ error: 'Failed to update user preferences' });
   }
 });
 
