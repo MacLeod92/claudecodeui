@@ -295,17 +295,23 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     return Boolean(FALLBACK_PROVIDER_EFFORT_VALUES[targetProvider]?.length);
   }, [providerCapabilities]);
 
+  // Only a fallback for when the in-memory model isn't (or is no longer) a
+  // valid catalog option — e.g. a deprecated model id, or first load before
+  // any session/global default has been established. Must NOT prefer the
+  // global stored default over an already-valid current value: the current
+  // value may have just been restored for a specific session, and clobbering
+  // it here would re-bleed the global default into that session.
   const pickStoredOrCurrent = (
     storageKey: string,
     current: string,
     def: ProviderModelsDefinition,
   ): string => {
+    if (current && def.OPTIONS.some((o) => o.value === current)) {
+      return current;
+    }
     const stored = localStorage.getItem(storageKey);
     if (stored && def.OPTIONS.some((o) => o.value === stored)) {
       return stored;
-    }
-    if (current && def.OPTIONS.some((o) => o.value === current)) {
-      return current;
     }
     return def.DEFAULT;
   };
@@ -386,9 +392,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       if (next !== claudeModel) {
         setClaudeModel(next);
       }
-      if (localStorage.getItem('claude-model') !== next) {
-        localStorage.setItem('claude-model', next);
-      }
     }
   }, [providerModelCatalog.claude, claudeModel]);
 
@@ -398,9 +401,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       const next = pickStoredOrCurrent('cursor-model', cursorModel, cursor);
       if (next !== cursorModel) {
         setCursorModel(next);
-      }
-      if (localStorage.getItem('cursor-model') !== next) {
-        localStorage.setItem('cursor-model', next);
       }
     }
   }, [providerModelCatalog.cursor, cursorModel]);
@@ -412,9 +412,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       if (next !== codexModel) {
         setCodexModel(next);
       }
-      if (localStorage.getItem('codex-model') !== next) {
-        localStorage.setItem('codex-model', next);
-      }
     }
   }, [providerModelCatalog.codex, codexModel]);
 
@@ -424,9 +421,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       const next = pickStoredOrCurrent('opencode-model', opencodeModel, opencode);
       if (next !== opencodeModel) {
         setOpenCodeModel(next);
-      }
-      if (localStorage.getItem('opencode-model') !== next) {
-        localStorage.setItem('opencode-model', next);
       }
     }
   }, [providerModelCatalog.opencode, opencodeModel]);
