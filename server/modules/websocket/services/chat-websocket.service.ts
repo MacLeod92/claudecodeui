@@ -10,6 +10,7 @@ import type {
   AnyRecord,
   AuthenticatedWebSocketRequest,
   LLMProvider,
+  RealtimeClientConnection,
 } from '@/shared/types.js';
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 
@@ -364,9 +365,14 @@ export function handleChatConnection(
   dependencies: ChatWebSocketDependencies
 ): void {
   console.log('[INFO] Chat WebSocket connected');
-  connectedClients.add(ws);
 
   const userId = readRequestUserId(request);
+  // `ws` structurally satisfies `RealtimeClientConnection`'s readyState/send
+  // members; attach `userId` so shared broadcast helpers can scope sends
+  // without every WS route needing to construct a wrapper object.
+  const scopedWs = ws as WebSocket & RealtimeClientConnection;
+  scopedWs.userId = userId;
+  connectedClients.add(scopedWs);
 
   ws.on('message', async (rawMessage) => {
     try {
