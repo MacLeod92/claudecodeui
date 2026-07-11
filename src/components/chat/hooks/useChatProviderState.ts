@@ -452,22 +452,22 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     if (cached) {
       setProviderModelState(provider, cached);
-      return;
+    } else {
+      // No cache yet: this is the first time this client has seen the
+      // session. Lock in whatever model is currently active locally as a
+      // reasonable default in the meantime.
+      localStorage.setItem(storageKey, providerModelsRef.current[provider]);
     }
 
-    // No cache yet: this is the first time this client has seen the
-    // session. Lock in whatever model is currently active locally as a
-    // reasonable default in the meantime.
-    localStorage.setItem(storageKey, providerModelsRef.current[provider]);
-
     // A session with prior messages already has a real, backend-recorded
-    // model — ask for it so a session predating this per-session cache (or
-    // opened for the first time on this client) shows its true history
-    // instead of whatever happened to be active locally. A brand-new,
-    // just-created session (messageCount 0) has no such record yet: its
-    // first message may not have landed server-side, so fetching here
-    // would race that write and silently fall back to the provider's bare
-    // default, clobbering the model the user just picked.
+    // model — ask for it, even if a cache entry already exists, since that
+    // cache may have been mis-pinned by an earlier bug/build (or the model
+    // may have since been changed from another client) and would otherwise
+    // never self-correct. A brand-new, just-created session (messageCount 0)
+    // has no such record yet: its first message may not have landed
+    // server-side, so fetching here would race that write and silently
+    // fall back to the provider's bare default, clobbering the model the
+    // user just picked.
     if (!selectedSession?.messageCount) {
       return;
     }
