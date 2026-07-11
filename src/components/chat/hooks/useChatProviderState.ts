@@ -425,26 +425,15 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
   }, [providerModelCatalog.opencode, opencodeModel]);
 
-  useEffect(() => {
-    const nextEfforts: Partial<Record<LLMProvider, string>> = {};
-    let hasUpdates = false;
-
-    for (const targetProvider of PROVIDERS) {
-      const currentEffort = providerEfforts[targetProvider] ?? DEFAULT_EFFORT_VALUE;
-      const nextEffort = reconcileStoredEffort(targetProvider, providerModels[targetProvider], currentEffort);
-      if (nextEffort === currentEffort) {
-        continue;
-      }
-
-      nextEfforts[targetProvider] = nextEffort;
-      localStorage.setItem(`${targetProvider}-effort`, nextEffort);
-      hasUpdates = true;
-    }
-
-    if (hasUpdates) {
-      setProviderEfforts((previous) => ({ ...previous, ...nextEfforts }));
-    }
-  }, [providerEfforts, providerModels, reconcileStoredEffort]);
+  // Note: the stored per-provider effort preference (`providerEfforts`,
+  // written only by `setStoredProviderEffort` on explicit user choice) is
+  // deliberately never overwritten just because the *currently viewed*
+  // session's model doesn't support effort. `currentProviderEffort` below
+  // already reconciles it against the live model for display/send purposes
+  // on every read; persisting that transient "unsupported -> default"
+  // result here previously destroyed the real preference (e.g. switching to
+  // a Haiku session, which doesn't support effort, would permanently reset
+  // the stored Sonnet effort to default).
 
   // Each session pins its own model once seen on this client, so a model
   // picked while a *different* session is open (or a brand-new chat's
