@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { authenticatedFetch } from '../../../utils/api';
+import { useWebSocket } from '../../../contexts/WebSocketContext';
+import { api, authenticatedFetch } from '../../../utils/api';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import type {
   ProjectSession,
@@ -87,6 +88,32 @@ type ChangeActiveModelApiResponse = {
   };
 };
 
+type CurrentActiveModelApiResponse = {
+  success?: boolean;
+  data?: {
+    model?: string;
+    // Only true when the backend read `model` from session-specific evidence
+    // (the session's JSONL transcript / provider session store). False/absent
+    // means it's just the provider's catalog default used as a fallback —
+    // which a brand-new session hits before its JSONL exists. Gates whether
+    // the resolution effect below applies `model`, so a fresh session
+    // navigated to before its transcript is written doesn't flash-reset the
+    // model picker to "default" when the real active model is something else.
+    resolved?: boolean;
+  };
+};
+
+/**
+ * Server-synced shape of the `selectedModel` key inside the generic
+ * `/api/user/preferences` blob. Keyed by session id only: a session's model
+ * is a confirmed, explicit choice (either picked by the user or read back
+ * from provider evidence at PATCH time), never inherited from another
+ * session or a per-provider "last picked anywhere" value.
+ */
+type StoredSelectedModelPreferences = {
+  sessions: Record<string, string>;
+};
+
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
@@ -111,6 +138,84 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   });
 
   /**
+   * Null until `GET /api/user/preferences` resolves (success or failure).
+   * Once resolved, a session's own entry here is authoritative: it is a
+   * confirmed choice (see `selectProviderModel` and the resolution effect
+   * below), not a guess, so it is applied without re-checking the backend.
+   */
+  const [serverSelectedModels, setServerSelectedModels] = useState<StoredSelectedModelPreferences | null>(null);
+  const modelPreferencesResolvedRef = useRef(false);
+
+  // Arrays pass `typeof x === 'object'` in JS, so this rejects a malformed
+  // `{ sessions: ['a', 'b'] }` payload instead of letting `sessions[id]`
+  // silently resolve to `undefined`.
+  const normalizeSelectedModelSessionsMap = (value: unknown): Record<string, string> => (
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, string>
+      : {}
+  );
+
+  const fetchSelectedModelPreferences = useCallback(async (): Promise<StoredSelectedModelPreferences> => {
+    const response = await api.user.getPreferences();
+    const body = await response.json();
+    const stored = body?.preferences?.selectedModel;
+    return {
+      sessions: normalizeSelectedModelSessionsMap(stored?.sessions),
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPreferences = async () => {
+      try {
+        const fresh = await fetchSelectedModelPreferences();
+        if (cancelled) {
+          return;
+        }
+        setServerSelectedModels(fresh);
+      } catch (error) {
+        console.error('Error loading selected-model preferences:', error);
+      } finally {
+        if (!cancelled) {
+          modelPreferencesResolvedRef.current = true;
+        }
+      }
+    };
+
+    void loadPreferences();
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchSelectedModelPreferences]);
+
+  const { subscribe } = useWebSocket();
+
+  // Live cross-device sync: another device/tab PATCHing its own preferences
+  // triggers a `preferences_updated` broadcast (scoped to this user) that we
+  // fold into the same state the resolution effect below already treats as
+  // authoritative.
+  useEffect(() => {
+    return subscribe((event) => {
+      if (event.kind !== 'preferences_updated') {
+        return;
+      }
+
+      const stored = (event as { preferences?: { selectedModel?: unknown } }).preferences?.selectedModel as
+        | { sessions?: unknown }
+        | undefined;
+      if (!stored) {
+        return;
+      }
+
+      setServerSelectedModels({
+        sessions: normalizeSelectedModelSessionsMap(stored.sessions),
+      });
+      modelPreferencesResolvedRef.current = true;
+    });
+  }, [subscribe]);
+
+  /**
    * Backend-owned capability matrix keyed by provider. Drives the permission
    * mode picker (and is the extension point for future per-provider UI
    * differences) so the frontend stays free of hardcoded provider branching.
@@ -131,6 +236,26 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [providerModelsRefreshing, setProviderModelsRefreshing] = useState(false);
 
   const providerModelsRequestIdRef = useRef(0);
+
+  // In-memory only — used to apply a session's resolved/derived model without
+  // touching the per-provider global default in localStorage that
+  // `setStoredProviderModel` owns. Session-scoped values are never a global
+  // default; they must not leak into the next brand-new chat.
+  const setProviderModelState = useCallback((targetProvider: LLMProvider, model: string) => {
+    if (targetProvider === 'claude') {
+      setClaudeModel(model);
+      return;
+    }
+    if (targetProvider === 'cursor') {
+      setCursorModel(model);
+      return;
+    }
+    if (targetProvider === 'codex') {
+      setCodexModel(model);
+      return;
+    }
+    setOpenCodeModel(model);
+  }, []);
 
   const setStoredProviderModel = useCallback((targetProvider: LLMProvider, model: string) => {
     if (targetProvider === 'claude') {
@@ -279,17 +404,24 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     return Boolean(FALLBACK_PROVIDER_EFFORT_VALUES[targetProvider]?.length);
   }, [providerCapabilities]);
 
+  // Only a fallback for when the in-memory model isn't (or is no longer) a
+  // valid catalog option — e.g. a deprecated model id, or first load before
+  // any session/global default has been established. Must NOT prefer the
+  // global stored default over an already-valid current value: the current
+  // value may have just been resolved for a specific session by the
+  // server-truth effect below, and clobbering it here would bleed the global
+  // default into that session's display.
   const pickStoredOrCurrent = (
     storageKey: string,
     current: string,
     def: ProviderModelsDefinition,
   ): string => {
+    if (current && def.OPTIONS.some((o) => o.value === current)) {
+      return current;
+    }
     const stored = localStorage.getItem(storageKey);
     if (stored && def.OPTIONS.some((o) => o.value === stored)) {
       return stored;
-    }
-    if (current && def.OPTIONS.some((o) => o.value === current)) {
-      return current;
     }
     return def.DEFAULT;
   };
@@ -430,6 +562,62 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
   }, [providerEfforts, providerModels, reconcileStoredEffort]);
 
+  // Single source of truth for which model a session is running: the
+  // server-stored preference (a confirmed prior choice, from this or any
+  // other device) if this session has one, else the backend's resolved
+  // active model, else a plain default shown while neither is available yet.
+  // No client-side pinning: nothing here is written to any per-session
+  // localStorage key, so there is nothing that a later async response can
+  // race against — each session switch reruns this same resolution against
+  // whatever server state is now current, and effect cleanup discards any
+  // in-flight lookup for a session that is no longer selected.
+  useEffect(() => {
+    const sessionId = selectedSession?.id?.trim();
+    if (!sessionId) {
+      return;
+    }
+
+    const resolvedProvider = selectedSession?.__provider ?? provider;
+    const catalog = providerModelCatalog[resolvedProvider];
+
+    const ownServerModel = serverSelectedModels?.sessions?.[sessionId];
+    const validOwnServerModel = ownServerModel && (!catalog || catalog.OPTIONS.some((o) => o.value === ownServerModel))
+      ? ownServerModel
+      : null;
+
+    if (validOwnServerModel) {
+      setProviderModelState(resolvedProvider, validOwnServerModel);
+      return;
+    }
+
+    // No explicit preference recorded for this session yet. Show a sensible
+    // default immediately so a rapid session switch never keeps displaying a
+    // previously-viewed, unrelated session's model while the lookup below is
+    // in flight, then replace it with the backend-confirmed model once (and
+    // only if) it actually resolves.
+    setProviderModelState(resolvedProvider, catalog?.DEFAULT ?? FALLBACK_DEFAULT_MODEL[resolvedProvider]);
+
+    let cancelled = false;
+
+    authenticatedFetch(`/api/providers/${resolvedProvider}/sessions/${encodeURIComponent(sessionId)}/active-model`)
+      .then((response) => response.json())
+      .then((body: CurrentActiveModelApiResponse) => {
+        if (cancelled || !body.success || !body.data?.model || !body.data.resolved) {
+          // Not yet resolvable (e.g. a brand-new session with no JSONL yet):
+          // keep showing the default applied above. Never persist a guess.
+          return;
+        }
+        setProviderModelState(resolvedProvider, body.data.model);
+      })
+      .catch((error) => {
+        console.error('Error loading current active model:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSession?.id, selectedSession?.__provider, provider, serverSelectedModels, providerModelCatalog, setProviderModelState]);
+
   useEffect(() => {
     const validModes = getPermissionModesForProvider(provider);
     const sessionSavedMode = selectedSession?.id
@@ -540,12 +728,32 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       throw new Error('Unable to change the active model for this session.');
     }
 
+    const resolvedModel = body.data.model || model;
+    setProviderModelState(targetProvider, resolvedModel);
+
+    // Explicit, user-initiated change: unlike the resolution effect above,
+    // this is a confirmed choice (not a guess), so it's safe — and desired,
+    // for cross-device sync — to persist it as this session's preference.
+    if (modelPreferencesResolvedRef.current) {
+      setServerSelectedModels((previous) => {
+        const next: StoredSelectedModelPreferences = {
+          sessions: { ...(previous?.sessions ?? {}), [normalizedSessionId]: resolvedModel },
+        };
+
+        void api.user.patchPreferences({ selectedModel: next }).catch((error) => {
+          console.error('Error syncing selected model preference:', error);
+        });
+
+        return next;
+      });
+    }
+
     return {
       scope: 'session' as const,
       changed: body.data.changed === true,
-      model: body.data.model || model,
+      model: resolvedModel,
     };
-  }, [setStoredProviderModel]);
+  }, [setStoredProviderModel, setProviderModelState]);
 
   const currentProviderEffortOptions = useMemo(() => {
     return getEffortOptionsForModel(provider, providerModels[provider]);

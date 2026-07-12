@@ -159,6 +159,7 @@ export class CodexProviderModels implements IProviderModels {
 
       return {
         model,
+        resolved: true,
       };
     } catch {
       return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());

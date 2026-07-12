@@ -135,6 +135,17 @@ export type ProviderModelsResult = {
  */
 export type ProviderCurrentActiveModel = {
   model: string;
+  // True only when `model` was read from session-specific evidence (e.g. the
+  // session's JSONL transcript, or Cursor's session store). False/absent means
+  // this is just the provider catalog's `DEFAULT` value used as a fallback —
+  // which can mean the session genuinely hasn't picked a non-default model,
+  // OR that the session-backed source isn't readable/written yet (e.g. a
+  // brand-new session whose JSONL hasn't been created). Callers that must not
+  // mistake "not yet resolvable" for "confirmed default" (like the frontend's
+  // session-switch display sync) should check this before applying `model`.
+  // The `/models` slash command intentionally ignores this and always uses
+  // `model` as-is, since falling back to default is the correct behavior there.
+  resolved?: boolean;
 };
 
 /**

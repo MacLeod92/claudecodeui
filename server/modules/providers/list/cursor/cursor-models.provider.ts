@@ -785,6 +785,7 @@ export class CursorProviderModels implements IProviderModels {
         if (typeof metadata.lastUsedModel === 'string' && metadata.lastUsedModel.trim()) {
           return {
             model: metadata.lastUsedModel.trim(),
+            resolved: true,
           };
         }
       } finally {
