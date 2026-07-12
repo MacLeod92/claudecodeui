@@ -77,6 +77,7 @@ function ChatInterface({
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
+    refreshPermissionModeFromServer,
     providerModelCatalog,
     providerModelCacheCatalog,
     providerModelsLoading,
@@ -235,7 +236,16 @@ function ChatInterface({
         lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
       }],
     });
-  }, [selectedProject, selectedSession, sendMessage, sessionStore]);
+    // A seed/PATCH triggered while offline (e.g. a brand-new session's
+    // permission mode never made it to the server) needs to be re-run now
+    // that the socket is back, so it gets corrected instead of silently
+    // staying wrong until something else happens to re-trigger it. Fetches
+    // fresh server state first rather than resolving against whatever's
+    // locally cached, since any `preferences_updated` broadcast sent by
+    // another device while this client was offline was simply never
+    // delivered.
+    void refreshPermissionModeFromServer();
+  }, [selectedProject, selectedSession, sendMessage, sessionStore, refreshPermissionModeFromServer]);
 
   useChatRealtimeHandlers({
     subscribe,

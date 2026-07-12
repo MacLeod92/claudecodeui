@@ -15,6 +15,7 @@ import { ImageIcon, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, Arrow
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
+import { useWebSocket } from '../../../../contexts/WebSocketContext';
 import type { QueuedDraft } from '../../hooks/useChatComposerState';
 import type { SessionActivity } from '../../../../hooks/useSessionProtection';
 import type { PendingPermissionRequest, PermissionMode } from '../../types/types';
@@ -173,6 +174,7 @@ export default function ChatComposer({
   sendByCtrlEnter,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
+  const { connectionState } = useWebSocket();
   const commandMenuPosition = useMemo(() => {
     if (!isCommandMenuOpen) {
       return { top: 0, left: 16, bottom: 90 };
@@ -442,7 +444,8 @@ export default function ChatComposer({
             <button
               type="button"
               onClick={onModeSwitch}
-              className={`inline-flex h-8 items-center rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
+              disabled={connectionState !== 'connected'}
+              className={`inline-flex h-8 items-center rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 disabled:cursor-not-allowed disabled:opacity-60 ${
                 permissionMode === 'default'
                   ? 'border-border/60 bg-muted/50 text-muted-foreground hover:bg-muted'
                   : permissionMode === 'acceptEdits'
@@ -453,9 +456,21 @@ export default function ChatComposer({
                         ? 'border-orange-300/60 bg-orange-50 text-orange-700 hover:bg-orange-100 dark:border-orange-600/40 dark:bg-orange-900/15 dark:text-orange-300 dark:hover:bg-orange-900/25'
                         : 'border-primary/20 bg-primary/5 text-primary hover:bg-primary/10'
               }`}
-              title={t('input.clickToChangeMode')}
+              title={
+                connectionState === 'reconnecting'
+                  ? t('input.connectionStatus.reconnecting')
+                  : connectionState === 'disconnected'
+                    ? t('input.connectionStatus.disconnected')
+                    : t('input.clickToChangeMode')
+              }
             >
               <div className="flex items-center gap-1.5">
+                {connectionState !== 'connected' && (
+                  <div
+                    className={`h-2 w-2 rounded-full ${connectionState === 'reconnecting' ? 'bg-yellow-500 dark:bg-yellow-400' : 'bg-destructive'}`}
+                    aria-hidden="true"
+                  />
+                )}
                 <div
                   className={`h-2.5 w-2.5 rounded-full sm:h-1.5 sm:w-1.5 ${
                     permissionMode === 'default'

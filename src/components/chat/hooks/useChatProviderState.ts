@@ -142,22 +142,29 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [serverPermissionModes, setServerPermissionModes] = useState<StoredPermissionModePreferences | null>(null);
   const preferencesResolvedRef = useRef(false);
 
+  // Shared by the mount-time load and the reconnect refresh below, so both
+  // parse the response the same way instead of drifting.
+  const fetchPermissionModePreferences = useCallback(async (): Promise<StoredPermissionModePreferences> => {
+    const response = await api.user.getPreferences();
+    const body = await response.json();
+    const stored = body?.preferences?.permissionMode;
+    return {
+      sessions: (stored && typeof stored.sessions === 'object' && stored.sessions) || {},
+      lastByProvider: (stored && typeof stored.lastByProvider === 'object' && stored.lastByProvider) || {},
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
     const loadPreferences = async () => {
       try {
-        const response = await api.user.getPreferences();
-        const body = await response.json();
+        const fresh = await fetchPermissionModePreferences();
         if (cancelled) {
           return;
         }
 
-        const stored = body?.preferences?.permissionMode;
-        setServerPermissionModes({
-          sessions: (stored && typeof stored.sessions === 'object' && stored.sessions) || {},
-          lastByProvider: (stored && typeof stored.lastByProvider === 'object' && stored.lastByProvider) || {},
-        });
+        setServerPermissionModes(fresh);
       } catch (error) {
         console.error('Error loading user preferences:', error);
       } finally {
@@ -171,7 +178,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [fetchPermissionModePreferences]);
 
   const { subscribe } = useWebSocket();
 
@@ -511,14 +518,20 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
   }, [providerEfforts, providerModels, reconcileStoredEffort]);
 
-  useEffect(() => {
+  const syncPermissionModeWithServer = useCallback((freshServerModes?: StoredPermissionModePreferences) => {
+    // Accepts an explicit snapshot (used by the reconnect refresh below,
+    // which awaits a fresh GET before calling this) so callers that just
+    // fetched newer data don't have to wait for the setState from that fetch
+    // to flush through a render before this reads it — falling back to the
+    // last state we have otherwise.
+    const activeServerModes = freshServerModes ?? serverPermissionModes;
     const validModes = getPermissionModesForProvider(provider);
 
     // Server values (once resolved) are authoritative; localStorage is only
     // the instant-paint fallback for values the server hasn't synced yet
     // (in flight, offline, or never written from this browser).
     const serverSessionMode = selectedSession?.id
-      ? serverPermissionModes?.sessions?.[selectedSession.id]
+      ? activeServerModes?.sessions?.[selectedSession.id]
       : undefined;
     const sessionSavedMode = selectedSession?.id
       ? (localStorage.getItem(`permissionMode-${selectedSession.id}`) as PermissionMode | null)
@@ -535,7 +548,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     // possibly-stale local one when both exist.
     const ownSessionMode = validServerSessionMode ?? validSessionSavedMode;
 
-    const serverProviderMode = serverPermissionModes?.lastByProvider?.[provider];
+    const serverProviderMode = activeServerModes?.lastByProvider?.[provider];
     const validServerProviderMode = serverProviderMode && validModes.includes(serverProviderMode as PermissionMode)
       ? (serverProviderMode as PermissionMode)
       : null;
@@ -606,6 +619,28 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     getDefaultPermissionModeForProvider,
     getPermissionModesForProvider,
   ]);
+
+  useEffect(() => {
+    syncPermissionModeWithServer();
+  }, [syncPermissionModeWithServer]);
+
+  // Reconnect-triggered resync: the WS `preferences_updated` broadcast is
+  // the only thing that otherwise keeps `serverPermissionModes` current, and
+  // broadcasts sent while this client was offline are simply never
+  // delivered — so a mode change made from another device during the outage
+  // would be invisible here. Re-fetching before resolving avoids resolving
+  // (and potentially re-seeding/PATCHing) against that stale cache.
+  const refreshPermissionModeFromServer = useCallback(async () => {
+    try {
+      const fresh = await fetchPermissionModePreferences();
+      preferencesResolvedRef.current = true;
+      setServerPermissionModes(fresh);
+      syncPermissionModeWithServer(fresh);
+    } catch (error) {
+      console.error('Error refreshing permission mode preferences on reconnect:', error);
+      syncPermissionModeWithServer();
+    }
+  }, [fetchPermissionModePreferences, syncPermissionModeWithServer]);
 
   useEffect(() => {
     if (!selectedSession?.__provider || selectedSession.__provider === provider) {
@@ -761,6 +796,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
+    refreshPermissionModeFromServer,
     providerModelCatalog,
     providerModelCacheCatalog,
     providerModelsLoading,
