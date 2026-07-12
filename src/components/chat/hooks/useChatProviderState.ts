@@ -142,6 +142,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [serverPermissionModes, setServerPermissionModes] = useState<StoredPermissionModePreferences | null>(null);
   const preferencesResolvedRef = useRef(false);
 
+  // Set when a user-initiated mode change (cyclePermissionMode) fails to
+  // reach the server. The local state is rolled back to the pre-click value
+  // in that case (see below), so this flag exists purely to surface the
+  // failure — otherwise the rollback itself is the only visible sign
+  // anything went wrong, which reads as the click being silently ignored.
+  // Cleared on the next successful cycle/PATCH.
+  const [permissionModeSyncFailed, setPermissionModeSyncFailed] = useState(false);
+
   // Holds the mode picked while a brand-new chat has no session id yet, so
   // it can be carried forward onto that exact draft's session once one is
   // created. Consumed only by `notifySessionEstablished` below, which is
@@ -157,6 +165,18 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   // See [[permission_mode_bleed]].
   const pendingCarryoverModeRef = useRef<PermissionMode | null>(null);
 
+  // Shared by every place a `sessions` map is parsed from server/broadcast
+  // data (the mount-time load, the reconnect refresh, and the WS handler
+  // below) so they all reject malformed payloads the same way. Arrays pass
+  // `typeof x === 'object'` in JS, so that check alone would accept a
+  // malformed `{ sessions: ['a', 'b'] }` payload and let `sessions[id]`
+  // silently resolve to `undefined` instead of failing cleanly.
+  const normalizeSessionsMap = (value: unknown): Record<string, string> => (
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, string>
+      : {}
+  );
+
   // Shared by the mount-time load and the reconnect refresh below, so both
   // parse the response the same way instead of drifting.
   const fetchPermissionModePreferences = useCallback(async (): Promise<StoredPermissionModePreferences> => {
@@ -164,7 +184,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const body = await response.json();
     const stored = body?.preferences?.permissionMode;
     return {
-      sessions: (stored && typeof stored.sessions === 'object' && stored.sessions) || {},
+      sessions: normalizeSessionsMap(stored?.sessions),
     };
   }, []);
 
@@ -216,7 +236,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       }
 
       setServerPermissionModes({
-        sessions: (stored.sessions && typeof stored.sessions === 'object' ? stored.sessions : {}) as Record<string, string>,
+        sessions: normalizeSessionsMap(stored.sessions),
       });
       preferencesResolvedRef.current = true;
     });
@@ -707,7 +727,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const currentIndex = modes.indexOf(permissionMode);
     const nextIndex = (currentIndex + 1) % modes.length;
     const nextMode = modes[nextIndex];
+    const previousMode = permissionMode;
     setPermissionMode(nextMode);
+    setPermissionModeSyncFailed(false);
 
     if (selectedSession?.id) {
       localStorage.setItem(`permissionMode-${selectedSession.id}`, nextMode);
@@ -730,13 +752,24 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       return;
     }
 
+    const sessionId = selectedSession.id;
     setServerPermissionModes((previous) => {
       const next: StoredPermissionModePreferences = {
-        sessions: { ...(previous?.sessions ?? {}), [selectedSession.id]: nextMode },
+        sessions: { ...(previous?.sessions ?? {}), [sessionId]: nextMode },
       };
 
       void api.user.patchPreferences({ permissionMode: next }).catch((error) => {
         console.error('Error syncing permission mode preference:', error);
+
+        // The server never received this change (e.g. a 5xx, not the
+        // already-handled disconnected case, since the button is disabled
+        // then) — roll the optimistic update back rather than leaving the
+        // UI showing a mode no other device, and eventually not even this
+        // one after a refresh, actually agrees with.
+        setPermissionMode((current) => (current === nextMode ? previousMode : current));
+        localStorage.setItem(`permissionMode-${sessionId}`, previousMode);
+        setServerPermissionModes((current) => (current === next ? previous : current));
+        setPermissionModeSyncFailed(true);
       });
 
       return next;
@@ -849,6 +882,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setOpenCodeModel,
     permissionMode,
     setPermissionMode,
+    permissionModeSyncFailed,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
