@@ -41,9 +41,11 @@ type WebSocketContextType = {
   isConnected: boolean;
   /**
    * Finer-grained connection state derived from the same reconnect logic
-   * that drives `isConnected`. 'reconnecting' covers the window between a
-   * drop (`onclose`) and the next connect attempt landing (`onopen`), so UI
-   * can distinguish "just dropped, retrying" from "never came back".
+   * that drives `isConnected`. Reconnect retries forever on a fixed 3s
+   * delay with no attempt cap, so 'reconnecting' covers a drop (`onclose`)
+   * for the entire duration of an outage, however long — there is no
+   * distinct "gave up" state during normal operation. 'disconnected' is
+   * reserved for provider unmount and the pre-connect initial state.
    */
   connectionState: 'connected' | 'disconnected' | 'reconnecting';
 };
