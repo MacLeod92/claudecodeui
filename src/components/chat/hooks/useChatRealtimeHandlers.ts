@@ -184,6 +184,13 @@ export function useChatRealtimeHandlers({
         case 'loading_progress':
           return;
 
+        // Not a chat message — has no id/sessionId. Consumed directly by
+        // useChatProviderState's own subscription to resync permission
+        // mode; must not fall through to the NormalizedMessage dispatch
+        // below or it crashes computeMerged in useSessionStore.
+        case 'preferences_updated':
+          return;
+
         default:
           break;
       }
