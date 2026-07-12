@@ -143,13 +143,19 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const preferencesResolvedRef = useRef(false);
 
   // Holds the mode picked while a brand-new chat has no session id yet, so
-  // it can be carried forward the moment the real id is assigned (which
-  // happens right after the first send). This is intentionally in-memory
-  // and single-use rather than a persisted per-provider "last picked
-  // anywhere" value — persisting it let a mode change on any session bleed
-  // into every subsequently created session. See [[permission_mode_bleed]].
+  // it can be carried forward onto that exact draft's session once one is
+  // created. Consumed only by `notifySessionEstablished` below, which is
+  // called with the freshly-minted session id at the one moment that
+  // transition actually happens (see `onSessionEstablished` in
+  // ChatInterface/useChatComposerState) — not inferred from a generic
+  // no-id-to-id prop change, which can't tell "this draft just got its id"
+  // apart from "the user abandoned this draft and clicked into an
+  // unrelated session" and would misattribute the mode to the latter.
+  // This is intentionally in-memory and single-use rather than a persisted
+  // per-provider "last picked anywhere" value — persisting it let a mode
+  // change on any session bleed into every subsequently created session.
+  // See [[permission_mode_bleed]].
   const pendingCarryoverModeRef = useRef<PermissionMode | null>(null);
-  const hadSessionIdRef = useRef(Boolean(selectedSession?.id));
 
   // Shared by the mount-time load and the reconnect refresh below, so both
   // parse the response the same way instead of drifting.
@@ -557,23 +563,23 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     // server's copy over a possibly-stale local one when both exist.
     const ownSessionMode = validServerSessionMode ?? validSessionSavedMode;
 
-    // The one legitimate cross-session carryover: a brand-new chat has no
-    // session id until the first send, so a mode picked beforehand needs to
-    // survive the transition from "no id" to "just-assigned id" — otherwise
-    // it would snap back to the default the instant the id appears. This is
-    // scoped to that exact transition (via an in-memory, single-use ref) so
-    // it cannot leak into any other session.
-    const isNewlyAssignedSessionId = Boolean(selectedSession?.id) && !hadSessionIdRef.current;
-    hadSessionIdRef.current = Boolean(selectedSession?.id);
-    const carryoverMode = isNewlyAssignedSessionId ? pendingCarryoverModeRef.current : null;
+    // No other fallback here — a session with no mode of its own resolves
+    // straight to the provider default. The one legitimate carryover case
+    // (a brand-new chat's pre-send mode choice) is handled separately by
+    // `notifySessionEstablished`, called explicitly with the new session's
+    // id at the exact moment it's created, not inferred here from a
+    // generic prop change.
+    const resolvedMode = ownSessionMode
+      ?? getDefaultPermissionModeForProvider(provider);
+    setPermissionMode(resolvedMode);
+
+    // Viewing any real session means there's no active draft anymore —
+    // drop a stale carryover left behind by a draft the user abandoned
+    // without sending, so it can't resurface on some later, unrelated
+    // draft. A no-op if `notifySessionEstablished` already consumed it.
     if (selectedSession?.id) {
       pendingCarryoverModeRef.current = null;
     }
-
-    const resolvedMode = ownSessionMode
-      ?? carryoverMode
-      ?? getDefaultPermissionModeForProvider(provider);
-    setPermissionMode(resolvedMode);
 
     if (!selectedSession?.id) {
       return;
@@ -723,6 +729,41 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     });
   }, [permissionMode, provider, selectedSession?.id, getPermissionModesForProvider]);
 
+  // Called with the freshly-minted session id at the exact moment a
+  // brand-new chat's draft becomes a real session (see
+  // `onSessionEstablished` in ChatInterface/useChatComposerState). This is
+  // the only place a pre-send mode choice is carried onto a session it
+  // wasn't originally resolved for — deliberately explicit and single-use,
+  // rather than inferred from any no-id-to-id prop transition, which can't
+  // distinguish "this draft just got its id" from "the user abandoned this
+  // draft and navigated to an unrelated session" (see [[permission_mode_bleed]]).
+  const notifySessionEstablished = useCallback((sessionId: string) => {
+    const carryoverMode = pendingCarryoverModeRef.current;
+    pendingCarryoverModeRef.current = null;
+    if (!carryoverMode) {
+      return;
+    }
+
+    setPermissionMode(carryoverMode);
+    localStorage.setItem(`permissionMode-${sessionId}`, carryoverMode);
+
+    if (!preferencesResolvedRef.current) {
+      return;
+    }
+
+    setServerPermissionModes((previous) => {
+      const next: StoredPermissionModePreferences = {
+        sessions: { ...(previous?.sessions ?? {}), [sessionId]: carryoverMode },
+      };
+
+      void api.user.patchPreferences({ permissionMode: next }).catch((error) => {
+        console.error('Error syncing permission mode preference:', error);
+      });
+
+      return next;
+    });
+  }, []);
+
   const resolvePermissionModeForProvider = useCallback((
     targetProvider: LLMProvider,
     requestedMode: PermissionMode | string,
@@ -797,6 +838,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
+    notifySessionEstablished,
     refreshPermissionModeFromServer,
     providerModelCatalog,
     providerModelCacheCatalog,

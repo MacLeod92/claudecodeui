@@ -77,6 +77,7 @@ function ChatInterface({
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
+    notifySessionEstablished,
     refreshPermissionModeFromServer,
     providerModelCatalog,
     providerModelCacheCatalog,
@@ -140,9 +141,10 @@ function ChatInterface({
   // in the URL — this id never changes again, so there is no later handoff.
   const handleSessionEstablished = useCallback<NonNullable<ChatInterfaceProps['onSessionEstablished']>>((sessionId, context) => {
     setCurrentSessionId(sessionId);
+    notifySessionEstablished(sessionId);
     onSessionEstablished?.(sessionId, context);
     onNavigateToSession?.(sessionId);
-  }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
+  }, [setCurrentSessionId, notifySessionEstablished, onSessionEstablished, onNavigateToSession]);
 
   const {
     input,
