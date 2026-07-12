@@ -48,13 +48,13 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
 
 /**
  * Server-synced shape of the `permissionMode` key inside the generic
- * `/api/user/preferences` blob. Mirrors the two-tier localStorage cache
- * (`permissionMode-${sessionId}` / `permissionMode-last-${provider}`) so the
- * same fallback chain works whether a value came from the network or disk.
+ * `/api/user/preferences` blob. Keyed by session id only — a session's mode
+ * is never inherited from another session, so there is no per-provider
+ * "last picked anywhere" fallback (see [[permission_mode_bleed]] for why
+ * that used to exist and why it was removed).
  */
 type StoredPermissionModePreferences = {
   sessions: Record<string, string>;
-  lastByProvider: Partial<Record<LLMProvider, string>>;
 };
 
 type ProviderCapabilities = {
@@ -142,6 +142,15 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [serverPermissionModes, setServerPermissionModes] = useState<StoredPermissionModePreferences | null>(null);
   const preferencesResolvedRef = useRef(false);
 
+  // Holds the mode picked while a brand-new chat has no session id yet, so
+  // it can be carried forward the moment the real id is assigned (which
+  // happens right after the first send). This is intentionally in-memory
+  // and single-use rather than a persisted per-provider "last picked
+  // anywhere" value — persisting it let a mode change on any session bleed
+  // into every subsequently created session. See [[permission_mode_bleed]].
+  const pendingCarryoverModeRef = useRef<PermissionMode | null>(null);
+  const hadSessionIdRef = useRef(Boolean(selectedSession?.id));
+
   // Shared by the mount-time load and the reconnect refresh below, so both
   // parse the response the same way instead of drifting.
   const fetchPermissionModePreferences = useCallback(async (): Promise<StoredPermissionModePreferences> => {
@@ -150,7 +159,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const stored = body?.preferences?.permissionMode;
     return {
       sessions: (stored && typeof stored.sessions === 'object' && stored.sessions) || {},
-      lastByProvider: (stored && typeof stored.lastByProvider === 'object' && stored.lastByProvider) || {},
     };
   }, []);
 
@@ -195,7 +203,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       }
 
       const stored = (event as { preferences?: { permissionMode?: unknown } }).preferences?.permissionMode as
-        | { sessions?: unknown; lastByProvider?: unknown }
+        | { sessions?: unknown }
         | undefined;
       if (!stored) {
         return;
@@ -203,7 +211,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
       setServerPermissionModes({
         sessions: (stored.sessions && typeof stored.sessions === 'object' ? stored.sessions : {}) as Record<string, string>,
-        lastByProvider: (stored.lastByProvider && typeof stored.lastByProvider === 'object' ? stored.lastByProvider : {}) as Partial<Record<LLMProvider, string>>,
       });
       preferencesResolvedRef.current = true;
     });
@@ -542,37 +549,31 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const validSessionSavedMode = sessionSavedMode && validModes.includes(sessionSavedMode)
       ? sessionSavedMode
       : null;
-    // Whether this session already has an explicit mode of its own (in
-    // either layer), as opposed to one it would only inherit from the
-    // shared per-provider fallback below. Prefer the server's copy over a
-    // possibly-stale local one when both exist.
+    // Whether this session already has an explicit mode of its own. A
+    // session with no mode of its own must resolve to the provider's true
+    // default, never to a value shared with other sessions — otherwise a
+    // mode change on any session bleeds into every other one (including
+    // brand-new sessions that haven't been created yet). Prefer the
+    // server's copy over a possibly-stale local one when both exist.
     const ownSessionMode = validServerSessionMode ?? validSessionSavedMode;
 
-    const serverProviderMode = activeServerModes?.lastByProvider?.[provider];
-    const validServerProviderMode = serverProviderMode && validModes.includes(serverProviderMode as PermissionMode)
-      ? (serverProviderMode as PermissionMode)
-      : null;
-    // Fall back to the last mode picked for this provider: a brand-new chat
-    // only receives its session id after the first send, so without this the
-    // mode chosen beforehand would snap back to the default as soon as the
-    // session id appears.
-    const providerSavedMode = localStorage.getItem(`permissionMode-last-${provider}`) as PermissionMode | null;
-    const validProviderSavedMode = providerSavedMode && validModes.includes(providerSavedMode)
-      ? providerSavedMode
-      : null;
+    // The one legitimate cross-session carryover: a brand-new chat has no
+    // session id until the first send, so a mode picked beforehand needs to
+    // survive the transition from "no id" to "just-assigned id" — otherwise
+    // it would snap back to the default the instant the id appears. This is
+    // scoped to that exact transition (via an in-memory, single-use ref) so
+    // it cannot leak into any other session.
+    const isNewlyAssignedSessionId = Boolean(selectedSession?.id) && !hadSessionIdRef.current;
+    hadSessionIdRef.current = Boolean(selectedSession?.id);
+    const carryoverMode = isNewlyAssignedSessionId ? pendingCarryoverModeRef.current : null;
+    if (selectedSession?.id) {
+      pendingCarryoverModeRef.current = null;
+    }
 
     const resolvedMode = ownSessionMode
-      ?? validServerProviderMode
-      ?? validProviderSavedMode
+      ?? carryoverMode
       ?? getDefaultPermissionModeForProvider(provider);
     setPermissionMode(resolvedMode);
-
-    // Keep the shared per-provider cache in step with the server once it
-    // has a valid value, independent of whether this particular session has
-    // its own entry.
-    if (validServerProviderMode && validServerProviderMode !== providerSavedMode) {
-      localStorage.setItem(`permissionMode-last-${provider}`, validServerProviderMode);
-    }
 
     if (!selectedSession?.id) {
       return;
@@ -596,7 +597,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
         setServerPermissionModes((previous) => {
           const next: StoredPermissionModePreferences = {
             sessions: { ...(previous?.sessions ?? {}), [sessionId]: resolvedMode },
-            lastByProvider: { ...(previous?.lastByProvider ?? {}) },
           };
 
           void api.user.patchPreferences({ permissionMode: next }).catch((error) => {
@@ -689,30 +689,31 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const nextMode = modes[nextIndex];
     setPermissionMode(nextMode);
 
-    // Persist per provider as well as per session: a brand-new chat has no
-    // session id yet, and the per-provider key keeps the choice sticky when
-    // the real id arrives (and for future sessions of this provider).
-    localStorage.setItem(`permissionMode-last-${provider}`, nextMode);
     if (selectedSession?.id) {
       localStorage.setItem(`permissionMode-${selectedSession.id}`, nextMode);
+    } else {
+      // A brand-new chat has no session id yet — remember the choice
+      // in-memory only, so it survives the transition to the real id
+      // (assigned right after the first send) without leaking into any
+      // other, unrelated session the way a persisted per-provider "last
+      // picked anywhere" value used to.
+      pendingCarryoverModeRef.current = nextMode;
     }
 
-    // Skip the server sync until the initial GET has resolved: the PATCH
+    // Nothing to sync to the server for a not-yet-created session — there's
+    // no session id to key the change under yet (see the carryover ref
+    // above). Also skip until the initial GET has resolved: the PATCH
     // shallow-merges only at the top level, so sending a `permissionMode`
-    // object built before we know the existing sessions/lastByProvider map
-    // would clobber values already stored for other sessions/providers.
-    if (!preferencesResolvedRef.current) {
+    // object built before we know the existing sessions map would clobber
+    // values already stored for other sessions.
+    if (!selectedSession?.id || !preferencesResolvedRef.current) {
       return;
     }
 
     setServerPermissionModes((previous) => {
       const next: StoredPermissionModePreferences = {
-        sessions: { ...(previous?.sessions ?? {}) },
-        lastByProvider: { ...(previous?.lastByProvider ?? {}), [provider]: nextMode },
+        sessions: { ...(previous?.sessions ?? {}), [selectedSession.id]: nextMode },
       };
-      if (selectedSession?.id) {
-        next.sessions[selectedSession.id] = nextMode;
-      }
 
       void api.user.patchPreferences({ permissionMode: next }).catch((error) => {
         console.error('Error syncing permission mode preference:', error);
