@@ -538,7 +538,20 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     // to flush through a render before this reads it — falling back to the
     // last state we have otherwise.
     const activeServerModes = freshServerModes ?? serverPermissionModes;
-    const validModes = getPermissionModesForProvider(provider);
+    // Resolve the provider from the session actually being viewed, not from
+    // `provider` state. `provider` state is synced to `selectedSession` by a
+    // separate effect declared below, which runs in the same commit but
+    // after this one — so on the render where `selectedSession` has just
+    // switched to a session of a different provider, `provider` here still
+    // holds the *previous* session's provider. That window let a session's
+    // real mode (e.g. `auto`, which is claude-only) get checked against the
+    // wrong provider's mode list, resolve to invalid/null, and get
+    // seeded/PATCHed over with that wrong provider's default — silently
+    // clobbering the session's actual stored mode both locally and
+    // server-side. Reading the provider straight off `selectedSession`
+    // closes the window instead of racing to correct it a render later.
+    const resolvedProvider = selectedSession?.__provider ?? provider;
+    const validModes = getPermissionModesForProvider(resolvedProvider);
 
     // Server values (once resolved) are authoritative; localStorage is only
     // the instant-paint fallback for values the server hasn't synced yet
@@ -570,7 +583,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     // id at the exact moment it's created, not inferred here from a
     // generic prop change.
     const resolvedMode = ownSessionMode
-      ?? getDefaultPermissionModeForProvider(provider);
+      ?? getDefaultPermissionModeForProvider(resolvedProvider);
     setPermissionMode(resolvedMode);
 
     // Viewing any real session means there's no active draft anymore —
@@ -620,6 +633,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
   }, [
     selectedSession?.id,
+    selectedSession?.__provider,
     provider,
     serverPermissionModes,
     getDefaultPermissionModeForProvider,
