@@ -166,7 +166,6 @@ ${USER_NOTIFICATION_PREFERENCES_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_user_notification_preferences_user_id ON user_notification_preferences(user_id);
 
 ${USER_UI_PREFERENCES_TABLE_SCHEMA_SQL}
-CREATE INDEX IF NOT EXISTS idx_user_ui_preferences_user_id ON user_ui_preferences(user_id);
 
 ${VAPID_KEYS_TABLE_SCHEMA_SQL}
 

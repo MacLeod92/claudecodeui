@@ -131,11 +131,18 @@ router.get('/preferences', authenticateToken, async (req, res) => {
   }
 });
 
+// UI preferences are small key/value settings; 10KB is generous headroom over any legitimate payload.
+const MAX_PREFERENCES_PAYLOAD_BYTES = 10 * 1024;
+
 router.patch('/preferences', authenticateToken, async (req, res) => {
   try {
     const partialPreferences = req.body;
     if (!partialPreferences || typeof partialPreferences !== 'object' || Array.isArray(partialPreferences)) {
       return res.status(400).json({ error: 'Request body must be an object' });
+    }
+
+    if (JSON.stringify(partialPreferences).length > MAX_PREFERENCES_PAYLOAD_BYTES) {
+      return res.status(400).json({ error: 'Preferences payload is too large' });
     }
 
     const preferences = uiPreferencesDb.updatePreferences(req.user.id, partialPreferences);

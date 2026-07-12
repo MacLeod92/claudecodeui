@@ -10,14 +10,15 @@ import { getConnection } from '@/modules/database/connection.js';
 
 type UiPreferences = Record<string, unknown>;
 
-function parsePreferences(json: string | undefined): UiPreferences {
+function parsePreferences(json: string | undefined, userId?: number): UiPreferences {
   if (!json) {
     return {};
   }
   try {
     const parsed = JSON.parse(json);
     return parsed && typeof parsed === 'object' ? parsed as UiPreferences : {};
-  } catch {
+  } catch (error) {
+    console.warn(`Failed to parse stored UI preferences${userId !== undefined ? ` for user ${userId}` : ''}:`, error);
     return {};
   }
 }
@@ -34,7 +35,7 @@ export const uiPreferencesDb = {
       return null;
     }
 
-    return parsePreferences(row.preferences_json);
+    return parsePreferences(row.preferences_json, userId);
   },
 
   /** Shallow-merges the given partial preferences into the stored blob and returns the result. */

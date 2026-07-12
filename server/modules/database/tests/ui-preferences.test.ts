@@ -58,6 +58,28 @@ test('updatePreferences shallow-merges without clobbering unrelated keys', async
   });
 });
 
+test('getPreferences logs and falls back to {} when stored JSON is malformed', async () => {
+  await withIsolatedDatabase((userId) => {
+    const db = getConnection();
+    db.prepare(
+      `INSERT INTO user_ui_preferences (user_id, preferences_json) VALUES (?, ?)`
+    ).run(userId, '{not valid json');
+
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { warnings.push(args); };
+
+    try {
+      assert.deepEqual(uiPreferencesDb.getPreferences(userId), {});
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 1);
+    assert.match(String(warnings[0][0]), new RegExp(`user ${userId}`));
+  });
+});
+
 test('preferences are isolated per user', async () => {
   await withIsolatedDatabase((userId) => {
     const db = getConnection();
