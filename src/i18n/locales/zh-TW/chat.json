@@ -115,6 +115,10 @@
       "enter": "Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令"
     },
     "clickToChangeMode": "點擊變更權限模式（或在輸入框中按 Tab）",
+    "connectionStatus": {
+      "disconnected": "已中斷連線",
+      "reconnecting": "正在重新連線…"
+    },
     "showAllCommands": "顯示所有指令",
     "clearInput": "清空輸入",
     "scrollToBottom": "捲動到底部"

@@ -126,6 +126,10 @@
       "updateQueued": "Enter to update queued message"
     },
     "clickToChangeMode": "Click to change permission mode (or press Tab in input)",
+    "connectionStatus": {
+      "disconnected": "Disconnected",
+      "reconnecting": "Reconnecting…"
+    },
     "showAllCommands": "Show all commands",
     "clearInput": "Clear input",
     "scrollToBottom": "Scroll to bottom",

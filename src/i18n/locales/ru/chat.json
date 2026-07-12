@@ -115,6 +115,10 @@
       "enter": "Enter для отправки • Shift+Enter для новой строки • Tab для смены режима • / для команд"
     },
     "clickToChangeMode": "Нажмите для смены режима разрешений (или нажмите Tab в поле ввода)",
+    "connectionStatus": {
+      "disconnected": "Нет соединения",
+      "reconnecting": "Переподключение…"
+    },
     "showAllCommands": "Показать все команды",
     "clearInput": "Очистить ввод",
     "scrollToBottom": "Прокрутить вниз"

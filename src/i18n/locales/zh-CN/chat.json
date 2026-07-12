@@ -115,6 +115,10 @@
       "enter": "Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令"
     },
     "clickToChangeMode": "点击更改权限模式（或在输入框中按 Tab）",
+    "connectionStatus": {
+      "disconnected": "已断开连接",
+      "reconnecting": "正在重新连接…"
+    },
     "showAllCommands": "显示所有命令",
     "clearInput": "清空输入",
     "scrollToBottom": "滚动到底部"
