@@ -164,6 +164,49 @@ describe('useChatProviderState model-selection resolution', () => {
     await waitFor(() => expect(result.current.claudeModel).toBe('haiku'));
   });
 
+  it('discards a stale session-A resolution that arrives after session-B has already resolved (reverse order)', async () => {
+    getPreferences.mockReturnValue(jsonResponse({ preferences: {} }));
+
+    const sessionAFetch = deferred<unknown>();
+    const sessionBFetch = deferred<unknown>();
+
+    authenticatedFetchMock.mockImplementation((url: string) => {
+      if (url.includes('session-a/active-model')) {
+        return sessionAFetch.promise;
+      }
+      if (url.includes('session-b/active-model')) {
+        return sessionBFetch.promise;
+      }
+      return jsonResponse({ success: false });
+    });
+
+    const { result, rerender } = renderHook(
+      ({ selectedSession }: { selectedSession: ProjectSession | null }) =>
+        useChatProviderState({ selectedSession, selectedProject: null }),
+      { initialProps: { selectedSession: makeSession({ id: 'session-a' }) } },
+    );
+
+    // Switch to session-b before session-a's (slow) lookup has resolved.
+    rerender({ selectedSession: makeSession({ id: 'session-b' }) });
+
+    // session-b's response lands first this time, and is applied.
+    sessionBFetch.resolve(jsonResponse({ success: true, data: { model: 'haiku', resolved: true } }));
+    await waitFor(() => expect(result.current.claudeModel).toBe('haiku'));
+
+    // session-a's stale response only arrives *after* session-b's has
+    // already been applied — the exact ordering that would matter if
+    // discarding stale responses depended on resolution order rather than on
+    // the effect-cleanup `cancelled` flag flipping the moment the session
+    // changed. It must still be a no-op: session-b's confirmed model must
+    // not be clobbered back to session-a's.
+    sessionAFetch.resolve(jsonResponse({ success: true, data: { model: 'opus', resolved: true } }));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(result.current.claudeModel).toBe('haiku');
+  });
+
   it('PATCHes the selected-model preference when the user explicitly picks a model', async () => {
     getPreferences.mockReturnValue(jsonResponse({ preferences: {} }));
     authenticatedFetchMock.mockImplementation((url: string, options?: { method?: string }) => {
