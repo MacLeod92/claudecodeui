@@ -17,6 +17,26 @@ const hasActionablePermissionRequests = (requests: Array<{ toolName?: unknown }>
   return Array.isArray(requests) && requests.some((request) => isActionablePermissionRequest(request));
 };
 
+/**
+ * Diagnostic-only: `appendRealtime` is fed via `msg as unknown as NormalizedMessage`
+ * with no runtime validation, so a malformed gateway/provider frame can reach
+ * `useSessionStore`'s `message.id.startsWith(...)` merge logic with `id`
+ * undefined and throw there instead of here. Logs anything that doesn't look
+ * like a well-formed `NormalizedMessage` right before the cast, to capture the
+ * actual offending payload the next time that crash reproduces.
+ */
+const warnIfNotWellFormedNormalizedMessage = (msg: Record<string, unknown>): void => {
+  if (typeof msg.id !== 'string' || msg.id.length === 0) {
+    console.warn('[Chat] appendRealtime received a frame with a missing/invalid id before cast to NormalizedMessage', {
+      kind: msg.kind,
+      sessionId: msg.sessionId,
+      idType: typeof msg.id,
+      id: msg.id,
+      keys: Object.keys(msg),
+    });
+  }
+};
+
 interface UseChatRealtimeHandlersArgs {
   subscribe: (listener: (event: ServerEvent) => void) => () => void;
   provider: LLMProvider;
@@ -187,6 +207,7 @@ export function useChatRealtimeHandlers({
         }
         // Also route to store for non-active sessions
         if (sid && sid !== activeViewSessionId) {
+          warnIfNotWellFormedNormalizedMessage(msg as unknown as Record<string, unknown>);
           sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
         }
         return;
@@ -215,6 +236,7 @@ export function useChatRealtimeHandlers({
         && msg.kind !== 'permission_cancelled';
 
       if (sid && shouldPersist) {
+        warnIfNotWellFormedNormalizedMessage(msg as unknown as Record<string, unknown>);
         sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
       }
 
