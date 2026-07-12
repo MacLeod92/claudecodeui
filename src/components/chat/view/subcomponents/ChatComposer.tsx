@@ -66,6 +66,7 @@ interface ChatComposerProps {
   isLoading: boolean;
   onAbortSession: () => void;
   permissionMode: PermissionMode | string;
+  permissionModeSyncFailed?: boolean;
   onModeSwitch: () => void;
   effort: string;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
@@ -124,6 +125,7 @@ export default function ChatComposer({
   isLoading,
   onAbortSession,
   permissionMode,
+  permissionModeSyncFailed,
   onModeSwitch,
   effort,
   availableEffortOptions,
@@ -461,13 +463,21 @@ export default function ChatComposer({
                   ? t('input.connectionStatus.reconnecting')
                   : connectionState === 'disconnected'
                     ? t('input.connectionStatus.disconnected')
-                    : t('input.clickToChangeMode')
+                    : permissionModeSyncFailed
+                      ? t('input.modeSyncFailed')
+                      : t('input.clickToChangeMode')
               }
             >
               <div className="flex items-center gap-1.5">
                 {connectionState !== 'connected' && (
                   <div
                     className={`h-2 w-2 rounded-full ${connectionState === 'reconnecting' ? 'bg-yellow-500 dark:bg-yellow-400' : 'bg-destructive'}`}
+                    aria-hidden="true"
+                  />
+                )}
+                {connectionState === 'connected' && permissionModeSyncFailed && (
+                  <div
+                    className="h-2 w-2 rounded-full bg-destructive"
                     aria-hidden="true"
                   />
                 )}

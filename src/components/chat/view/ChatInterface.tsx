@@ -74,6 +74,7 @@ function ChatInterface({
     opencodeModel,
     setOpenCodeModel,
     permissionMode,
+    permissionModeSyncFailed,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
@@ -401,6 +402,7 @@ function ChatInterface({
           isLoading={isProcessing}
           onAbortSession={handleAbortSession}
           permissionMode={permissionMode}
+          permissionModeSyncFailed={permissionModeSyncFailed}
           onModeSwitch={cyclePermissionMode}
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
