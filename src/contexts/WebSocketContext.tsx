@@ -39,6 +39,13 @@ type WebSocketContextType = {
    */
   latestMessage: ServerEvent | null;
   isConnected: boolean;
+  /**
+   * Finer-grained connection state derived from the same reconnect logic
+   * that drives `isConnected`. 'reconnecting' covers the window between a
+   * drop (`onclose`) and the next connect attempt landing (`onopen`), so UI
+   * can distinguish "just dropped, retrying" from "never came back".
+   */
+  connectionState: 'connected' | 'disconnected' | 'reconnecting';
 };
 
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
@@ -70,6 +77,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
   const listenersRef = useRef(new Set<ServerEventListener>());
   const [latestMessage, setLatestMessage] = useState<ServerEvent | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState<'connected' | 'disconnected' | 'reconnecting'>('disconnected');
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const { token } = useAuth();
 
@@ -114,6 +122,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
 
       websocket.onopen = () => {
         setIsConnected(true);
+        setConnectionState('connected');
         wsRef.current = websocket;
         if (hasConnectedRef.current) {
           // This is a reconnect — signal so components can catch up on missed messages
@@ -133,6 +142,10 @@ const useWebSocketProviderState = (): WebSocketContextType => {
 
       websocket.onclose = () => {
         setIsConnected(false);
+        // A reconnect attempt is always scheduled below unless unmounted, so
+        // the state is 'reconnecting' (not a terminal 'disconnected') for
+        // the whole window until the next `onopen` lands.
+        setConnectionState(unmountedRef.current ? 'disconnected' : 'reconnecting');
         wsRef.current = null;
 
         // Attempt to reconnect after 3 seconds
@@ -173,8 +186,9 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     sendMessage,
     subscribe,
     latestMessage,
-    isConnected
-  }), [sendMessage, subscribe, latestMessage, isConnected]);
+    isConnected,
+    connectionState
+  }), [sendMessage, subscribe, latestMessage, isConnected, connectionState]);
 
   return value;
 };

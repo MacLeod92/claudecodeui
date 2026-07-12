@@ -115,6 +115,10 @@
       "enter": "Enter zum Senden • Shift+Enter für neue Zeile • Tab zum Moduswechsel • / für Slash-Befehle"
     },
     "clickToChangeMode": "Klicken, um den Berechtigungsmodus zu ändern (oder Tab in der Eingabe drücken)",
+    "connectionStatus": {
+      "disconnected": "Getrennt",
+      "reconnecting": "Verbindung wird wiederhergestellt…"
+    },
     "showAllCommands": "Alle Befehle anzeigen",
     "clearInput": "Eingabe leeren",
     "scrollToBottom": "Nach unten scrollen"

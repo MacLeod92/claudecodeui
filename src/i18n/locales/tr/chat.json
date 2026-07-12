@@ -115,6 +115,10 @@
       "enter": "Göndermek için Enter • Yeni satır için Shift+Enter • Mod değiştirmek için Tab • Slash komutları için /"
     },
     "clickToChangeMode": "İzin modunu değiştirmek için tıkla (veya girdide Tab tuşuna bas)",
+    "connectionStatus": {
+      "disconnected": "Bağlantı kesildi",
+      "reconnecting": "Yeniden bağlanıyor…"
+    },
     "showAllCommands": "Tüm komutları göster",
     "clearInput": "Girdiyi temizle",
     "scrollToBottom": "En alta git"

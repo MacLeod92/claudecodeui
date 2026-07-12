@@ -35,6 +35,7 @@ import ActivityIndicator from './ActivityIndicator';
 import ImageAttachment from './ImageAttachment';
 import VoiceInputButton from './VoiceInputButton';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
+import ConnectionStatusIndicator from './ConnectionStatusIndicator';
 import TokenUsageSummary from './TokenUsageSummary';
 import QueuedMessageCard from './QueuedMessageCard';
 
@@ -477,6 +478,8 @@ export default function ChatComposer({
                 </span>
               </div>
             </button>
+
+            <ConnectionStatusIndicator />
 
             {availableEffortOptions.length > 0 && (
               <div ref={effortDropdownRef} className="relative">
