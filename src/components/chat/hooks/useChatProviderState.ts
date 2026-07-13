@@ -758,7 +758,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
         sessions: { ...(previous?.sessions ?? {}), [sessionId]: nextMode },
       };
 
-      void api.user.patchPreferences({ permissionMode: next }).catch((error) => {
+      const rollback = (error: unknown) => {
         console.error('Error syncing permission mode preference:', error);
 
         // The server never received this change (e.g. a 5xx, not the
@@ -770,7 +770,17 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
         localStorage.setItem(`permissionMode-${sessionId}`, previousMode);
         setServerPermissionModes((current) => (current === next ? previous : current));
         setPermissionModeSyncFailed(true);
-      });
+      };
+
+      // authenticatedFetch resolves (not rejects) on 4xx/5xx responses — it
+      // only rejects on network-level failures — so a genuine server-side
+      // rejection of the PATCH must be caught here via response.ok, not just
+      // in .catch().
+      void api.user.patchPreferences({ permissionMode: next }).then((response) => {
+        if (!response.ok) {
+          rollback(new Error(`Permission mode sync failed with status ${response.status}`));
+        }
+      }).catch(rollback);
 
       return next;
     });

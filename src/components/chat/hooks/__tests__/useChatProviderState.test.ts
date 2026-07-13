@@ -160,6 +160,36 @@ describe('useChatProviderState permission mode resolution', () => {
     expect(localStorage.getItem('permissionMode-session-1')).toBe('default');
   });
 
+  it('rolls back and flags the failure when the PATCH resolves with a non-2xx response', async () => {
+    // authenticatedFetch resolves (not rejects) on HTTP-level failures like
+    // 403/500 — only network-level failures reject. This exercises that
+    // resolved-but-not-ok path, distinct from the rejected-promise case above.
+    getPreferences.mockReturnValue(
+      jsonResponse({ preferences: { permissionMode: { sessions: { 'session-1': 'default' } } } }),
+    );
+    patchPreferences.mockImplementation(() =>
+      Promise.resolve({ ok: false, status: 403, json: async () => ({ success: false }) }),
+    );
+
+    const { result } = renderHook(() =>
+      useChatProviderState({ selectedSession: makeSession(), selectedProject: null }),
+    );
+
+    await waitFor(() => expect(result.current.permissionMode).toBe('default'));
+    expect(result.current.permissionModeSyncFailed).toBe(false);
+
+    act(() => {
+      result.current.cyclePermissionMode();
+    });
+
+    expect(result.current.permissionMode).toBe('auto');
+
+    await waitFor(() => expect(patchPreferences).toHaveBeenCalled());
+    await waitFor(() => expect(result.current.permissionMode).toBe('default'));
+    await waitFor(() => expect(result.current.permissionModeSyncFailed).toBe(true));
+    expect(localStorage.getItem('permissionMode-session-1')).toBe('default');
+  });
+
   it('applies a preferences_updated broadcast with a malformed array payload without crashing', async () => {
     const { result } = renderHook(() =>
       useChatProviderState({ selectedSession: makeSession(), selectedProject: null }),
