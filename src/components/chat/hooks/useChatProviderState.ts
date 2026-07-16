@@ -287,7 +287,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [providerCapabilities]);
 
   // Last model value applied via a session-scoped change (setProviderModelState),
-  // per provider.
+  // per provider. The reconcile effect below skips persisting a value that matches,
+  // so a session-scoped change never becomes the new global default. Never cleared:
+  // a stale entry only matters if the model later reconverges on that exact string
+  // via the stored/DEFAULT fallback in pickStoredOrCurrent, which would then wrongly
+  // be skipped — accepted over splitting "default" and "session override" into
+  // separate state.
   const sessionScopedModelRef = useRef<Partial<Record<LLMProvider, string>>>({});
 
   const providerModelSetters = useMemo<Record<LLMProvider, (model: string) => void>>(() => ({
@@ -391,7 +396,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       if (next !== current) {
         providerModelSetters[targetProvider](next);
       }
-      if (localStorage.getItem(storageKey) !== next) {
+      if (sessionScopedModelRef.current[targetProvider] !== next && localStorage.getItem(storageKey) !== next) {
         localStorage.setItem(storageKey, next);
       }
     }
