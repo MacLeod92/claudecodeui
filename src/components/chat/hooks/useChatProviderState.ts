@@ -279,17 +279,25 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     return Boolean(FALLBACK_PROVIDER_EFFORT_VALUES[targetProvider]?.length);
   }, [providerCapabilities]);
 
+  // Prefer an already-valid `current` value over the stored default. This
+  // reconcile effect reruns on every `claudeModel` change, so if it preferred
+  // `stored` it would immediately clobber a freshly-selected session model
+  // (which `selectProviderModel` deliberately writes to state only, not to the
+  // per-provider `*-model` localStorage default) back to the stale stored
+  // value — making a mid-session model switch never take effect on the next
+  // turn. `stored`/`DEFAULT` remain the fallback for when `current` isn't a
+  // known catalog option (e.g. a deprecated id, or first load).
   const pickStoredOrCurrent = (
     storageKey: string,
     current: string,
     def: ProviderModelsDefinition,
   ): string => {
+    if (current && def.OPTIONS.some((o) => o.value === current)) {
+      return current;
+    }
     const stored = localStorage.getItem(storageKey);
     if (stored && def.OPTIONS.some((o) => o.value === stored)) {
       return stored;
-    }
-    if (current && def.OPTIONS.some((o) => o.value === current)) {
-      return current;
     }
     return def.DEFAULT;
   };
