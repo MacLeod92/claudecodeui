@@ -399,6 +399,17 @@ router.get(
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const sessionId = parseSessionId(req.params.sessionId);
+
+    // A pending override (from the model picker) hasn't been used on a resumed
+    // turn yet, so it never shows up in the transcript getCurrentActiveModel
+    // reads from. Surface it first so a session opened in a second tab/device
+    // reflects a pick made elsewhere instead of the stale last-used model.
+    const changedModel = await providerModelsService.getChangedActiveModel(provider, sessionId);
+    if (changedModel.supported && changedModel.changed && changedModel.model?.trim()) {
+      res.json(createApiSuccessResponse({ model: changedModel.model.trim() }));
+      return;
+    }
+
     const result = await providerModelsService.getCurrentActiveModel(provider, sessionId);
     res.json(createApiSuccessResponse(result));
   }),
