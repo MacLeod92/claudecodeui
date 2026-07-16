@@ -583,6 +583,47 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     };
   }, [setStoredProviderModel, setProviderModelState]);
 
+  // `claudeModel`/etc. are single pieces of state on this hook instance, not
+  // keyed per session, so nothing else here resets them when the selected
+  // session changes. Before this effect existed, a model picked in one
+  // session (via `selectProviderModel` above) stayed in memory and silently
+  // carried over into whichever session was opened next, showing/using the
+  // wrong model. Re-resolve from the backend (the session's real active
+  // model, read from its JSONL/session store) every time the selected
+  // session changes so each session's model is independent of the others.
+  useEffect(() => {
+    const sessionId = selectedSession?.id?.trim();
+    if (!sessionId) {
+      return;
+    }
+
+    const resolvedProvider = selectedSession?.__provider ?? provider;
+    const catalog = providerModelCatalog[resolvedProvider];
+
+    // Show a sensible default immediately so a rapid session switch never
+    // keeps displaying a previously-viewed, unrelated session's model while
+    // the lookup below is in flight.
+    setProviderModelState(resolvedProvider, catalog?.DEFAULT ?? FALLBACK_DEFAULT_MODEL[resolvedProvider]);
+
+    let cancelled = false;
+
+    authenticatedFetch(`/api/providers/${resolvedProvider}/sessions/${encodeURIComponent(sessionId)}/active-model`)
+      .then((response) => response.json())
+      .then((body: { success?: boolean; data?: { model?: string } }) => {
+        if (cancelled || !body.success || !body.data?.model) {
+          return;
+        }
+        setProviderModelState(resolvedProvider, body.data.model);
+      })
+      .catch((error) => {
+        console.error('Error loading current active model:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSession?.id, selectedSession?.__provider, provider, providerModelCatalog, setProviderModelState]);
+
   const currentProviderEffortOptions = useMemo(() => {
     return getEffortOptionsForModel(provider, providerModels[provider]);
   }, [getEffortOptionsForModel, provider, providerModels]);
