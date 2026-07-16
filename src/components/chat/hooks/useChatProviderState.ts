@@ -288,11 +288,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   // Last model value applied via a session-scoped change (setProviderModelState),
   // per provider. The reconcile effect below skips persisting a value that matches,
-  // so a session-scoped change never becomes the new global default. Deliberately
-  // never cleared: it's compared by value, not consumed once, so a stale entry is
-  // harmless unless a future stored-default computation happens to produce the same
-  // string — an edge case judged acceptable over the complexity of state-splitting
-  // "default" from "session override" into two separately-owned pieces of state.
+  // so a session-scoped change never becomes the new global default. Never cleared:
+  // a stale entry only matters if the model later reconverges on that exact string
+  // via the stored/DEFAULT fallback in pickStoredOrCurrent, which would then wrongly
+  // be skipped — accepted over splitting "default" and "session override" into
+  // separate state.
   const sessionScopedModelRef = useRef<Partial<Record<LLMProvider, string>>>({});
 
   const providerModelSetters = useMemo<Record<LLMProvider, (model: string) => void>>(() => ({
