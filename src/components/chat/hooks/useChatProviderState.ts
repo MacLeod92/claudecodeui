@@ -279,18 +279,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     return Boolean(FALLBACK_PROVIDER_EFFORT_VALUES[targetProvider]?.length);
   }, [providerCapabilities]);
 
-  // Tracks, per provider, the last model value applied via a session-scoped
-  // change (setProviderModelState) rather than an explicit "set as default"
-  // (setStoredProviderModel). The reconcile effects below compare against
-  // this so they don't persist a session-scoped value as the new global
-  // default. Comparing by value (rather than a one-shot flag) avoids a race
-  // where the flag would go unconsumed if the reconcile effect doesn't
-  // re-run because the model value didn't actually change.
+  // Last model value applied via a session-scoped change (setProviderModelState),
+  // per provider. The reconcile effects below skip persisting a value that matches,
+  // so a session-scoped change never becomes the new global default.
   const sessionScopedModelRef = useRef<Partial<Record<LLMProvider, string>>>({});
 
-  // Prefer an already-valid `current` value over the stored default; see
-  // sessionScopedModelRef for why the reconcile effects must not always
-  // persist `current` back to localStorage.
   const pickStoredOrCurrent = (
     storageKey: string,
     current: string,
@@ -524,8 +517,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       : getDefaultPermissionModeForProvider(targetProvider);
   }, [getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
 
-  // setState functions from useState are stable for the lifetime of the
-  // component, so this map only needs to be built once.
   const providerModelSetters = useMemo<Record<LLMProvider, (model: string) => void>>(() => ({
     claude: setClaudeModel,
     cursor: setCursorModel,
@@ -533,10 +524,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     opencode: setOpenCodeModel,
   }), []);
 
-  // In-memory only — used to apply a session-scoped model choice without
-  // touching the per-provider global default in localStorage that
-  // `setStoredProviderModel` owns. A session-scoped choice must not bleed
-  // into the next brand-new chat's default model.
+  // Applies a model choice in memory only, without touching the localStorage
+  // default that setStoredProviderModel owns.
   const setProviderModelState = useCallback((targetProvider: LLMProvider, model: string) => {
     sessionScopedModelRef.current[targetProvider] = model;
     providerModelSetters[targetProvider](model);
@@ -570,11 +559,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       throw new Error('Unable to change the active model for this session.');
     }
 
-    // The backend persisted the change, but nothing above this point updates
-    // the in-memory model state, so the next message sent for this session
-    // would still carry the old model (the value composer options read from
-    // is this session's local state, not the backend). Apply the resolved
-    // model immediately so the switch actually takes effect on the next turn.
+    // Apply the resolved model to in-memory state so the next message sent
+    // for this session uses it, rather than waiting on a future reconcile.
     const resolvedModel = body.data.model || model;
     setProviderModelState(targetProvider, resolvedModel);
 
@@ -585,14 +571,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     };
   }, [setStoredProviderModel, setProviderModelState]);
 
-  // `claudeModel`/etc. are single pieces of state on this hook instance, not
-  // keyed per session, so nothing else here resets them when the selected
-  // session changes. Before this effect existed, a model picked in one
-  // session (via `selectProviderModel` above) stayed in memory and silently
-  // carried over into whichever session was opened next, showing/using the
-  // wrong model. Re-resolve from the backend (the session's real active
-  // model, read from its JSONL/session store) every time the selected
-  // session changes so each session's model is independent of the others.
+  // Re-resolve the active model from the backend whenever the selected session
+  // changes, so a model picked in one session doesn't carry over into the next.
   useEffect(() => {
     const sessionId = selectedSession?.id?.trim();
     if (!sessionId) {
@@ -602,9 +582,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const resolvedProvider = selectedSession?.__provider ?? provider;
     const catalog = providerModelCatalog[resolvedProvider];
 
-    // Show a sensible default immediately so a rapid session switch never
-    // keeps displaying a previously-viewed, unrelated session's model while
-    // the lookup below is in flight.
+    // Show a default immediately while the lookup below is in flight, so a
+    // rapid session switch doesn't keep displaying the previous session's model.
     setProviderModelState(resolvedProvider, catalog?.DEFAULT ?? FALLBACK_DEFAULT_MODEL[resolvedProvider]);
 
     let cancelled = false;
