@@ -112,13 +112,59 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
   DEFAULT: 'default',
 };
 
+// Only matches "1m" as a distinct token (bounded by start/end or a non-alphanumeric
+// character) so it can't accidentally fire on a version/date fragment that happens
+// to contain the substring "1m" (e.g. a hypothetical "...-41m..." id).
+const HAS_1M_TOKEN = /(?:^|[^a-z0-9])1m(?:[^a-z0-9]|$)/i;
+
+// JSONL transcripts record the raw Anthropic API model id (e.g. 'claude-sonnet-5',
+// 'claude-haiku-4-5-20251001'), but CLAUDE_FALLBACK_MODELS.OPTIONS uses the short
+// aliases the CLI's --model flag accepts ('sonnet', 'haiku', ...). This heuristic
+// only runs once findClaudeModelOption's exact match against OPTIONS has already
+// failed, so it's the single place that owns "what does this model string mean"
+// for anything that isn't already a known alias.
+const matchClaudeModelOptionFromRawId = (rawModel: string): ProviderModelOption | null => {
+  const normalized = rawModel.toLowerCase();
+  const has1m = HAS_1M_TOKEN.test(normalized);
+
+  let alias: string | null = null;
+  if (normalized.includes('opus')) {
+    alias = has1m ? 'opus[1m]' : 'opus';
+  } else if (normalized.includes('haiku')) {
+    alias = 'haiku';
+  } else if (normalized.includes('fable')) {
+    alias = 'fable';
+  } else if (normalized.includes('sonnet')) {
+    alias = has1m ? 'sonnet[1m]' : 'sonnet';
+  }
+
+  if (!alias) {
+    // Signal loudly: a silent fallback to DEFAULT here means a new/renamed model
+    // id makes the frontend's active-model resolution indistinguishable from
+    // "no evidence yet", which is the exact bug this heuristic was added to fix.
+    console.warn(
+      `[claude-models] Unrecognized model id "${rawModel}" — no alias pattern matched. `
+      + 'Falling back to the catalog default; update matchClaudeModelOptionFromRawId '
+      + 'in claude-models.provider.ts if a new Claude model was introduced.',
+    );
+    return null;
+  }
+
+  return CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === alias) ?? null;
+};
+
 export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {
   const normalizedModel = typeof model === 'string' ? model.trim() : '';
   if (!normalizedModel) {
     return null;
   }
 
-  return CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === normalizedModel) ?? null;
+  const exactMatch = CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === normalizedModel);
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  return matchClaudeModelOptionFromRawId(normalizedModel);
 };
 type ClaudeInitEvent = {
   sessionId?: string;
@@ -219,7 +265,7 @@ const readClaudeSessionModelFromJsonl = async (
       const event = JSON.parse(lines[index]) as ClaudeInitEvent;
       const model = extractClaudeEventModel(event, sessionId);
       if (model) {
-        return { model };
+        return { model: findClaudeModelOption(model)?.value ?? CLAUDE_FALLBACK_MODELS.DEFAULT };
       }
     } catch {
       // Skip malformed JSONL lines that can happen during concurrent writes.
