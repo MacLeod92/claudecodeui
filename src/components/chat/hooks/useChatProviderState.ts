@@ -520,25 +520,22 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       : getDefaultPermissionModeForProvider(targetProvider);
   }, [getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
 
+  // setState functions from useState are stable for the lifetime of the
+  // component, so this map only needs to be built once.
+  const providerModelSetters = useMemo<Record<LLMProvider, (model: string) => void>>(() => ({
+    claude: setClaudeModel,
+    cursor: setCursorModel,
+    codex: setCodexModel,
+    opencode: setOpenCodeModel,
+  }), []);
+
   // In-memory only — used to apply a session-scoped model choice without
   // touching the per-provider global default in localStorage that
   // `setStoredProviderModel` owns. A session-scoped choice must not bleed
   // into the next brand-new chat's default model.
   const setProviderModelState = useCallback((targetProvider: LLMProvider, model: string) => {
-    if (targetProvider === 'claude') {
-      setClaudeModel(model);
-      return;
-    }
-    if (targetProvider === 'cursor') {
-      setCursorModel(model);
-      return;
-    }
-    if (targetProvider === 'codex') {
-      setCodexModel(model);
-      return;
-    }
-    setOpenCodeModel(model);
-  }, []);
+    providerModelSetters[targetProvider](model);
+  }, [providerModelSetters]);
 
   const selectProviderModel = useCallback(async (
     targetProvider: LLMProvider,

@@ -115,42 +115,51 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
 // Only matches "1m" as a distinct token (bounded by start/end or a non-alphanumeric
 // character) so it can't accidentally fire on a version/date fragment that happens
 // to contain the substring "1m" (e.g. a hypothetical "...-41m..." id).
-const HAS_1M_TOKEN = /(?:^|[^a-z0-9])1m(?:[^a-z0-9]|$)/i;
+const ONE_M_TOKEN_SOURCE = '(?:^|[^a-z0-9])1m(?:[^a-z0-9]|$)';
+
+type ClaudeModelIdPattern = {
+  alias: string;
+  pattern: RegExp;
+};
 
 // JSONL transcripts record the raw Anthropic API model id (e.g. 'claude-sonnet-5',
 // 'claude-haiku-4-5-20251001'), but CLAUDE_FALLBACK_MODELS.OPTIONS uses the short
-// aliases the CLI's --model flag accepts ('sonnet', 'haiku', ...). This heuristic
-// only runs once findClaudeModelOption's exact match against OPTIONS has already
-// failed, so it's the single place that owns "what does this model string mean"
-// for anything that isn't already a known alias.
+// aliases the CLI's --model flag accepts ('sonnet', 'haiku', ...). This table is
+// the single place that owns "what raw id maps to what alias" — it stays in sync
+// with OPTIONS by construction, since every alias here is looked up against
+// OPTIONS below rather than returned directly.
+//
+// Order matters: the 1M-context variants must come before their bare counterparts,
+// since a 1M-context raw id also contains the bare model name as a substring
+// (e.g. an opus-1m id also matches a bare "opus" pattern).
+const CLAUDE_MODEL_ID_PATTERNS: ClaudeModelIdPattern[] = [
+  { alias: 'opus[1m]', pattern: new RegExp(`(?=.*opus)(?=.*${ONE_M_TOKEN_SOURCE})`, 'i') },
+  { alias: 'opus', pattern: /opus/i },
+  { alias: 'sonnet[1m]', pattern: new RegExp(`(?=.*sonnet)(?=.*${ONE_M_TOKEN_SOURCE})`, 'i') },
+  { alias: 'sonnet', pattern: /sonnet/i },
+  { alias: 'haiku', pattern: /haiku/i },
+  { alias: 'fable', pattern: /fable/i },
+];
+
+// This heuristic only runs once findClaudeModelOption's exact match against
+// OPTIONS has already failed, so it's the single place that owns "what does
+// this model string mean" for anything that isn't already a known alias.
 const matchClaudeModelOptionFromRawId = (rawModel: string): ProviderModelOption | null => {
-  const normalized = rawModel.toLowerCase();
-  const has1m = HAS_1M_TOKEN.test(normalized);
+  const match = CLAUDE_MODEL_ID_PATTERNS.find(({ pattern }) => pattern.test(rawModel));
 
-  let alias: string | null = null;
-  if (normalized.includes('opus')) {
-    alias = has1m ? 'opus[1m]' : 'opus';
-  } else if (normalized.includes('haiku')) {
-    alias = 'haiku';
-  } else if (normalized.includes('fable')) {
-    alias = 'fable';
-  } else if (normalized.includes('sonnet')) {
-    alias = has1m ? 'sonnet[1m]' : 'sonnet';
-  }
-
-  if (!alias) {
+  if (!match) {
     // Signal loudly: a silent fallback to DEFAULT here means a new/renamed model
     // id makes the frontend's active-model resolution indistinguishable from
     // "no evidence yet", which is the exact bug this heuristic was added to fix.
     console.warn(
       `[claude-models] Unrecognized model id "${rawModel}" — no alias pattern matched. `
-      + 'Falling back to the catalog default; update matchClaudeModelOptionFromRawId '
+      + 'Falling back to the catalog default; update CLAUDE_MODEL_ID_PATTERNS '
       + 'in claude-models.provider.ts if a new Claude model was introduced.',
     );
     return null;
   }
 
-  return CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === alias) ?? null;
+  return CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === match.alias) ?? null;
 };
 
 export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {
