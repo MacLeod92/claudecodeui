@@ -279,14 +279,18 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     return Boolean(FALLBACK_PROVIDER_EFFORT_VALUES[targetProvider]?.length);
   }, [providerCapabilities]);
 
-  // Prefer an already-valid `current` value over the stored default. This
-  // reconcile effect reruns on every `claudeModel` change, so if it preferred
-  // `stored` it would immediately clobber a freshly-selected session model
-  // (which `selectProviderModel` deliberately writes to state only, not to the
-  // per-provider `*-model` localStorage default) back to the stale stored
-  // value — making a mid-session model switch never take effect on the next
-  // turn. `stored`/`DEFAULT` remain the fallback for when `current` isn't a
-  // known catalog option (e.g. a deprecated id, or first load).
+  // Tracks, per provider, the last model value applied via a session-scoped
+  // change (setProviderModelState) rather than an explicit "set as default"
+  // (setStoredProviderModel). The reconcile effects below compare against
+  // this so they don't persist a session-scoped value as the new global
+  // default. Comparing by value (rather than a one-shot flag) avoids a race
+  // where the flag would go unconsumed if the reconcile effect doesn't
+  // re-run because the model value didn't actually change.
+  const sessionScopedModelRef = useRef<Partial<Record<LLMProvider, string>>>({});
+
+  // Prefer an already-valid `current` value over the stored default; see
+  // sessionScopedModelRef for why the reconcile effects must not always
+  // persist `current` back to localStorage.
   const pickStoredOrCurrent = (
     storageKey: string,
     current: string,
@@ -372,7 +376,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       if (next !== claudeModel) {
         setClaudeModel(next);
       }
-      if (localStorage.getItem('claude-model') !== next) {
+      if (sessionScopedModelRef.current.claude !== next && localStorage.getItem('claude-model') !== next) {
         localStorage.setItem('claude-model', next);
       }
     }
@@ -385,7 +389,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       if (next !== cursorModel) {
         setCursorModel(next);
       }
-      if (localStorage.getItem('cursor-model') !== next) {
+      if (sessionScopedModelRef.current.cursor !== next && localStorage.getItem('cursor-model') !== next) {
         localStorage.setItem('cursor-model', next);
       }
     }
@@ -398,7 +402,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       if (next !== codexModel) {
         setCodexModel(next);
       }
-      if (localStorage.getItem('codex-model') !== next) {
+      if (sessionScopedModelRef.current.codex !== next && localStorage.getItem('codex-model') !== next) {
         localStorage.setItem('codex-model', next);
       }
     }
@@ -411,7 +415,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       if (next !== opencodeModel) {
         setOpenCodeModel(next);
       }
-      if (localStorage.getItem('opencode-model') !== next) {
+      if (sessionScopedModelRef.current.opencode !== next && localStorage.getItem('opencode-model') !== next) {
         localStorage.setItem('opencode-model', next);
       }
     }
@@ -534,6 +538,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   // `setStoredProviderModel` owns. A session-scoped choice must not bleed
   // into the next brand-new chat's default model.
   const setProviderModelState = useCallback((targetProvider: LLMProvider, model: string) => {
+    sessionScopedModelRef.current[targetProvider] = model;
     providerModelSetters[targetProvider](model);
   }, [providerModelSetters]);
 
