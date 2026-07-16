@@ -547,6 +547,40 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     };
   }, [setStoredProviderModel, setProviderModelState]);
 
+  // Re-resolve the active model from the backend whenever the selected session
+  // changes, so a model picked in one session doesn't carry over into the next.
+  useEffect(() => {
+    const sessionId = selectedSession?.id?.trim();
+    if (!sessionId) {
+      return;
+    }
+
+    const resolvedProvider = selectedSession?.__provider ?? provider;
+    const catalog = providerModelCatalog[resolvedProvider];
+
+    // Show a default immediately while the lookup below is in flight, so a
+    // rapid session switch doesn't keep displaying the previous session's model.
+    setProviderModelState(resolvedProvider, catalog?.DEFAULT ?? FALLBACK_DEFAULT_MODEL[resolvedProvider]);
+
+    let cancelled = false;
+
+    authenticatedFetch(`/api/providers/${resolvedProvider}/sessions/${encodeURIComponent(sessionId)}/active-model`)
+      .then((response) => response.json())
+      .then((body: { success?: boolean; data?: { model?: string } }) => {
+        if (cancelled || !body.success || !body.data?.model) {
+          return;
+        }
+        setProviderModelState(resolvedProvider, body.data.model);
+      })
+      .catch((error) => {
+        console.error('Error loading current active model:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSession?.id, selectedSession?.__provider, provider, providerModelCatalog, setProviderModelState]);
+
   const currentProviderEffortOptions = useMemo(() => {
     return getEffortOptionsForModel(provider, providerModels[provider]);
   }, [getEffortOptionsForModel, provider, providerModels]);
