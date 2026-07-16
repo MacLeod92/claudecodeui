@@ -25,6 +25,13 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
 
 const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
 
+const PROVIDER_MODEL_STORAGE_KEYS: Record<LLMProvider, string> = {
+  claude: 'claude-model',
+  cursor: 'cursor-model',
+  codex: 'codex-model',
+  opencode: 'opencode-model',
+};
+
 const readStoredProvider = (): LLMProvider => {
   const storedProvider = localStorage.getItem('selected-provider');
   return PROVIDERS.includes(storedProvider as LLMProvider)
@@ -280,10 +287,24 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [providerCapabilities]);
 
   // Last model value applied via a session-scoped change (setProviderModelState),
-  // per provider. The reconcile effects below skip persisting a value that matches,
-  // so a session-scoped change never becomes the new global default.
+  // per provider. The reconcile effect below skips persisting a value that matches,
+  // so a session-scoped change never becomes the new global default. Deliberately
+  // never cleared: it's compared by value, not consumed once, so a stale entry is
+  // harmless unless a future stored-default computation happens to produce the same
+  // string — an edge case judged acceptable over the complexity of state-splitting
+  // "default" from "session override" into two separately-owned pieces of state.
   const sessionScopedModelRef = useRef<Partial<Record<LLMProvider, string>>>({});
 
+  const providerModelSetters = useMemo<Record<LLMProvider, (model: string) => void>>(() => ({
+    claude: setClaudeModel,
+    cursor: setCursorModel,
+    codex: setCodexModel,
+    opencode: setOpenCodeModel,
+  }), []);
+
+  // `current` wins over the stored value on purpose: this runs on every model
+  // change, so preferring `stored` would immediately overwrite a freshly-applied
+  // session-scoped model back to the last persisted default.
   const pickStoredOrCurrent = (
     storageKey: string,
     current: string,
@@ -363,56 +384,23 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }), [claudeModel, cursorModel, codexModel, opencodeModel]);
 
   useEffect(() => {
-    const claude = providerModelCatalog.claude;
-    if (claude) {
-      const next = pickStoredOrCurrent('claude-model', claudeModel, claude);
-      if (next !== claudeModel) {
-        setClaudeModel(next);
+    for (const targetProvider of PROVIDERS) {
+      const catalog = providerModelCatalog[targetProvider];
+      if (!catalog) {
+        continue;
       }
-      if (sessionScopedModelRef.current.claude !== next && localStorage.getItem('claude-model') !== next) {
-        localStorage.setItem('claude-model', next);
-      }
-    }
-  }, [providerModelCatalog.claude, claudeModel]);
 
-  useEffect(() => {
-    const cursor = providerModelCatalog.cursor;
-    if (cursor) {
-      const next = pickStoredOrCurrent('cursor-model', cursorModel, cursor);
-      if (next !== cursorModel) {
-        setCursorModel(next);
+      const storageKey = PROVIDER_MODEL_STORAGE_KEYS[targetProvider];
+      const current = providerModels[targetProvider];
+      const next = pickStoredOrCurrent(storageKey, current, catalog);
+      if (next !== current) {
+        providerModelSetters[targetProvider](next);
       }
-      if (sessionScopedModelRef.current.cursor !== next && localStorage.getItem('cursor-model') !== next) {
-        localStorage.setItem('cursor-model', next);
-      }
-    }
-  }, [providerModelCatalog.cursor, cursorModel]);
-
-  useEffect(() => {
-    const codex = providerModelCatalog.codex;
-    if (codex) {
-      const next = pickStoredOrCurrent('codex-model', codexModel, codex);
-      if (next !== codexModel) {
-        setCodexModel(next);
-      }
-      if (sessionScopedModelRef.current.codex !== next && localStorage.getItem('codex-model') !== next) {
-        localStorage.setItem('codex-model', next);
+      if (sessionScopedModelRef.current[targetProvider] !== next && localStorage.getItem(storageKey) !== next) {
+        localStorage.setItem(storageKey, next);
       }
     }
-  }, [providerModelCatalog.codex, codexModel]);
-
-  useEffect(() => {
-    const opencode = providerModelCatalog.opencode;
-    if (opencode) {
-      const next = pickStoredOrCurrent('opencode-model', opencodeModel, opencode);
-      if (next !== opencodeModel) {
-        setOpenCodeModel(next);
-      }
-      if (sessionScopedModelRef.current.opencode !== next && localStorage.getItem('opencode-model') !== next) {
-        localStorage.setItem('opencode-model', next);
-      }
-    }
-  }, [providerModelCatalog.opencode, opencodeModel]);
+  }, [providerModelCatalog, providerModels, providerModelSetters]);
 
   useEffect(() => {
     const nextEfforts: Partial<Record<LLMProvider, string>> = {};
@@ -516,13 +504,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       ? requestedMode as PermissionMode
       : getDefaultPermissionModeForProvider(targetProvider);
   }, [getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
-
-  const providerModelSetters = useMemo<Record<LLMProvider, (model: string) => void>>(() => ({
-    claude: setClaudeModel,
-    cursor: setCursorModel,
-    codex: setCodexModel,
-    opencode: setOpenCodeModel,
-  }), []);
 
   // Applies a model choice in memory only, without touching the localStorage
   // default that setStoredProviderModel owns.

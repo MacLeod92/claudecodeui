@@ -113,38 +113,39 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
 };
 
 // Matches "1m" as a distinct token so it can't fire on a substring like "...-41m...".
-const ONE_M_TOKEN_SOURCE = '(?:^|[^a-z0-9])1m(?:[^a-z0-9]|$)';
-
-type ClaudeModelIdPattern = {
-  alias: string;
-  pattern: RegExp;
-};
+const ONE_M_TOKEN_PATTERN = /(?:^|[^a-z0-9])1m(?:[^a-z0-9]|$)/i;
 
 // Maps raw Anthropic API model ids (from JSONL transcripts, e.g. 'claude-sonnet-5')
-// to the short CLI aliases used in CLAUDE_FALLBACK_MODELS.OPTIONS. The [1m] entries
-// must precede their bare counterparts since a 1M-context id also matches the bare pattern.
-const CLAUDE_MODEL_ID_PATTERNS: ClaudeModelIdPattern[] = [
-  { alias: 'opus[1m]', pattern: new RegExp(`(?=.*opus)(?=.*${ONE_M_TOKEN_SOURCE})`, 'i') },
-  { alias: 'opus', pattern: /opus/i },
-  { alias: 'sonnet[1m]', pattern: new RegExp(`(?=.*sonnet)(?=.*${ONE_M_TOKEN_SOURCE})`, 'i') },
-  { alias: 'sonnet', pattern: /sonnet/i },
-  { alias: 'haiku', pattern: /haiku/i },
-  { alias: 'fable', pattern: /fable/i },
+// to the short CLI aliases used in CLAUDE_FALLBACK_MODELS.OPTIONS. Family and
+// 1m-context are independent axes, checked separately and composed below, so
+// there's no ordering to get wrong when a new family or suffix is added.
+const CLAUDE_MODEL_FAMILY_PATTERNS: [alias: string, pattern: RegExp][] = [
+  ['opus', /opus/i],
+  ['sonnet', /sonnet/i],
+  ['haiku', /haiku/i],
+  ['fable', /fable/i],
 ];
 
 const matchClaudeModelOptionFromRawId = (rawModel: string): ProviderModelOption | null => {
-  const match = CLAUDE_MODEL_ID_PATTERNS.find(({ pattern }) => pattern.test(rawModel));
+  const family = CLAUDE_MODEL_FAMILY_PATTERNS.find(([, pattern]) => pattern.test(rawModel));
 
-  if (!match) {
+  if (!family) {
     console.warn(
-      `[claude-models] Unrecognized model id "${rawModel}" — no alias pattern matched. `
-      + 'Falling back to the catalog default; update CLAUDE_MODEL_ID_PATTERNS '
+      `[claude-models] Unrecognized model id "${rawModel}" — no family pattern matched. `
+      + 'Falling back to the catalog default; update CLAUDE_MODEL_FAMILY_PATTERNS '
       + 'in claude-models.provider.ts if a new Claude model was introduced.',
     );
     return null;
   }
 
-  return CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === match.alias) ?? null;
+  const [name] = family;
+  const alias = ONE_M_TOKEN_PATTERN.test(rawModel) ? `${name}[1m]` : name;
+
+  return (
+    CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === alias)
+    ?? CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === name)
+    ?? null
+  );
 };
 
 export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {
