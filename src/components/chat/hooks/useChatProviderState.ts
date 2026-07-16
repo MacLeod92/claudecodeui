@@ -512,6 +512,26 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       : getDefaultPermissionModeForProvider(targetProvider);
   }, [getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
 
+  // In-memory only — used to apply a session-scoped model choice without
+  // touching the per-provider global default in localStorage that
+  // `setStoredProviderModel` owns. A session-scoped choice must not bleed
+  // into the next brand-new chat's default model.
+  const setProviderModelState = useCallback((targetProvider: LLMProvider, model: string) => {
+    if (targetProvider === 'claude') {
+      setClaudeModel(model);
+      return;
+    }
+    if (targetProvider === 'cursor') {
+      setCursorModel(model);
+      return;
+    }
+    if (targetProvider === 'codex') {
+      setCodexModel(model);
+      return;
+    }
+    setOpenCodeModel(model);
+  }, []);
+
   const selectProviderModel = useCallback(async (
     targetProvider: LLMProvider,
     model: string,
@@ -540,12 +560,20 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       throw new Error('Unable to change the active model for this session.');
     }
 
+    // The backend persisted the change, but nothing above this point updates
+    // the in-memory model state, so the next message sent for this session
+    // would still carry the old model (the value composer options read from
+    // is this session's local state, not the backend). Apply the resolved
+    // model immediately so the switch actually takes effect on the next turn.
+    const resolvedModel = body.data.model || model;
+    setProviderModelState(targetProvider, resolvedModel);
+
     return {
       scope: 'session' as const,
       changed: body.data.changed === true,
-      model: body.data.model || model,
+      model: resolvedModel,
     };
-  }, [setStoredProviderModel]);
+  }, [setStoredProviderModel, setProviderModelState]);
 
   const currentProviderEffortOptions = useMemo(() => {
     return getEffortOptionsForModel(provider, providerModels[provider]);
