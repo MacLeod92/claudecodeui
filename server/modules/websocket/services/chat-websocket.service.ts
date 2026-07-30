@@ -4,6 +4,7 @@ import type { WebSocket } from 'ws';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService } from '@/modules/providers/index.js';
+import { rememberSessionOptions } from '@/modules/session-wake/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import {
@@ -192,6 +193,11 @@ async function handleChatSend(
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
+
+  // Remembered so a later headless wake (session-wake) can resume with the
+  // same permissionMode/toolsSettings/model/effort a live chat.send would
+  // have carried, instead of silently falling back to default approval.
+  rememberSessionOptions(sessionId, clientOptions);
 
   // Record what this turn runs with so reopening the session later restores the
   // same model and reasoning effort, and so the resume path has a

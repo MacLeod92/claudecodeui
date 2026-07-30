@@ -41,6 +41,7 @@ import {
     stopAllPlugins,
 } from './modules/plugins/index.js';
 import providerRoutes from './modules/providers/provider.routes.js';
+import { createSessionWakeRoutes } from './modules/session-wake/index.js';
 import { voiceRoutes } from './modules/voice/index.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { assetsRoutes } from './modules/assets/index.js';
@@ -191,6 +192,12 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 
 // Unified provider MCP routes (protected)
 app.use('/api/providers', authenticateToken, providerRoutes);
+
+// Headless session wake — lets a finished background job inject a turn into
+// an idle session, either via a normal user JWT or a one-time internal
+// X-Wake-Token minted for that job (see modules/session-wake); the route
+// itself decides which applies, so no blanket authenticateToken here.
+app.use('/api/sessions', createSessionWakeRoutes(providerRuntimeService, authenticateToken));
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
