@@ -585,7 +585,10 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
     }
 
     /**
-     * Calculate total tokens from all messages
+     * Calculate total tokens from the most recent message. Each assistant
+     * usage block already reports the full cumulative context for the
+     * conversation, so summing it across messages multiplies the same
+     * cache-read tokens once per tool-call round trip in the turn.
      */
     getTotalTokens() {
       let totalInput = 0;
@@ -593,13 +596,13 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       let totalCacheRead = 0;
       let totalCacheCreation = 0;
 
-      for (const msg of this.messages) {
-        let data = msg;
+      for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+        let data = this.messages[index];
 
         // Parse if string
-        if (typeof msg === 'string') {
+        if (typeof data === 'string') {
           try {
-            data = JSON.parse(msg);
+            data = JSON.parse(data);
           } catch (e) {
             continue;
           }
@@ -610,10 +613,11 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           const msgData = data.data;
           if (msgData.message && msgData.message.usage) {
             const usage = msgData.message.usage;
-            totalInput += usage.input_tokens || 0;
-            totalOutput += usage.output_tokens || 0;
-            totalCacheRead += usage.cache_read_input_tokens || 0;
-            totalCacheCreation += usage.cache_creation_input_tokens || 0;
+            totalInput = usage.input_tokens || 0;
+            totalOutput = usage.output_tokens || 0;
+            totalCacheRead = usage.cache_read_input_tokens || 0;
+            totalCacheCreation = usage.cache_creation_input_tokens || 0;
+            break;
           }
         }
       }
