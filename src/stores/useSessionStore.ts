@@ -138,7 +138,13 @@ function createEmptySlot(): SessionSlot {
     total: 0,
     hasMore: false,
     offset: 0,
-    tokenUsage: null,
+    // undefined (not null): distinguishes "never fetched from the server"
+    // from a server response that explicitly returned no usage. Providers
+    // like claude never include tokenUsage in the messages payload, and
+    // useChatSessionState's `slot.tokenUsage !== undefined` reads use this
+    // distinction to avoid clobbering a live WebSocket-derived value with a
+    // default that was never actually confirmed by the server.
+    tokenUsage: undefined,
     _historyMutationQueue: Promise.resolve(),
   };
 }
