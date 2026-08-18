@@ -356,6 +356,14 @@ function extractTokenBudget(sdkMessage) {
     return null;
   }
 
+  // The SDK's final 'result' message carries a usage total summed across
+  // every API round trip in the turn (it matches total_cost_usd), not the
+  // current context size. Skip it so the budget stays at the last real
+  // assistant message's usage instead of ballooning when the turn ends.
+  if (sdkMessage.type === 'result') {
+    return null;
+  }
+
   const messageUsage = sdkMessage.message?.usage || sdkMessage.usage;
   if (messageUsage && typeof messageUsage === 'object') {
     const directInputTokens = readNumber(messageUsage.input_tokens ?? messageUsage.inputTokens);
