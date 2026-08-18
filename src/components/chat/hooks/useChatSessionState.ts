@@ -848,14 +848,20 @@ export function useChatSessionState({
         const response = await authenticatedFetch(url);
         if (response.ok) {
           const payload = await response.json();
-          setTokenBudget(payload.data ?? null);
+          const data = payload.data as Record<string, unknown> | null | undefined;
+          // A freshly-created transcript file can exist but still lack an
+          // assistant usage line, so the read returns used: 0 with a 200. A
+          // non-OK response (e.g. 404 while the file hasn't been written
+          // yet) is the same story. Either case is indistinguishable from
+          // "no usage yet" and can race a live WebSocket `token_budget`
+          // update that already populated a correct, non-zero value for
+          // this turn. Only apply the fetched value when it actually
+          // carries usage (or an explicit "unsupported" provider result),
+          // so a stale zero never clobbers the live value.
+          if (data && (data.used || data.unsupported)) {
+            setTokenBudget(data);
+          }
         }
-        // A non-OK response (e.g. 404 while the on-disk transcript hasn't
-        // been written yet) does not mean "no usage": it can race a live
-        // WebSocket `token_budget` update that already populated a correct
-        // value for this turn. Leave existing state alone rather than
-        // clobbering it with null; this fetch only seeds the value when
-        // nothing is known yet.
       } catch (error) {
         console.error('Failed to fetch initial token usage:', error);
       }
