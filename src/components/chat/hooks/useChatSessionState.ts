@@ -849,9 +849,13 @@ export function useChatSessionState({
         if (response.ok) {
           const payload = await response.json();
           setTokenBudget(payload.data ?? null);
-        } else {
-          setTokenBudget(null);
         }
+        // A non-OK response (e.g. 404 while the on-disk transcript hasn't
+        // been written yet) does not mean "no usage": it can race a live
+        // WebSocket `token_budget` update that already populated a correct
+        // value for this turn. Leave existing state alone rather than
+        // clobbering it with null; this fetch only seeds the value when
+        // nothing is known yet.
       } catch (error) {
         console.error('Failed to fetch initial token usage:', error);
       }
