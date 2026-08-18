@@ -421,7 +421,7 @@ function extractTokenBudget(sdkMessage) {
 
 // Tool calls that leave work running past the end of a turn. Bash only counts
 // when it is explicitly backgrounded; the rest defer or watch work by nature.
-const DEFERRED_WORK_TOOLS = new Set(['Monitor', 'ScheduleWakeup', 'CronCreate', 'TaskCreate']);
+const DEFERRED_WORK_TOOLS = new Set(['Monitor', 'ScheduleWakeup', 'CronCreate', 'TaskCreate', 'Agent']);
 
 /**
  * Detects tool calls that keep working after the turn's `result` arrives.
