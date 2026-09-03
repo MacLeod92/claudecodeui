@@ -117,6 +117,7 @@ export const OPENCODE_PREDEFINED_MODELS: ProviderModelsDefinition = {
     { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 mini', description: 'OpenAI' },
     { value: 'openai/gpt-5.4-mini-fast', label: 'GPT-5.4 mini Fast', description: 'OpenAI' },
     { value: 'openai/gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark', description: 'OpenAI' },
+    { value: 'ollama/gemma4:12b', label: 'Gemma 4 12B', description: 'Ollama (Windows GPU box)' },
   ],
   DEFAULT: 'opencode/gpt-5.6-terra',
 };
