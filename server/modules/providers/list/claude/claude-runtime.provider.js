@@ -331,12 +331,22 @@ function addSession(sessionId, queryInstance, writer = null, releaseInput = null
   );
   if (superseding) {
     supersededInstances.add(existing.instance);
+    // Interrupt before releasing input: releasing first closes the old
+    // instance's stdin, so by the time interrupt() runs there is nothing
+    // left to deliver it to and it fails with "Query closed before response
+    // received" — the old run then dies on an uncontrolled SIGTERM/EOF
+    // instead of a clean interrupt, leaving a window where its `for await`
+    // loop is still processing messages against a session a newer run
+    // already owns.
+    stopOutstandingTasks(sessionId, existing);
     Promise.resolve()
       .then(() => existing.instance.interrupt())
       .catch((error) => {
         console.error(`Error interrupting superseded run for session ${sessionId}:`, error?.message || error);
+      })
+      .finally(() => {
+        existing.releaseInput?.();
       });
-    existing.releaseInput?.();
     // Whatever the superseded process had outstanding dies with it and will
     // never report, so the new run starts from an empty task set.
     backgroundWork.clear(sessionId);
@@ -356,8 +366,8 @@ function addSession(sessionId, queryInstance, writer = null, releaseInput = null
 }
 
 /**
- * Lets go of the process an earlier run left holding a session open, so the
- * next turn can take the session over.
+ * Stops the background tasks a superseded run still has going, so the next
+ * turn can take the session over.
  *
  * Closing stdin is not enough on its own: the CLI's wind-down waits for the
  * background agents the process still has going — for up to the ceiling it
@@ -365,29 +375,25 @@ function addSession(sessionId, queryInstance, writer = null, releaseInput = null
  * agent outstanding would run next to the process that replaced it for as
  * long as the agent does, both appending to the same session file. Stop the
  * tasks first, while stdin is still open: the SDK drops control requests
- * written after stdin has ended, which is also why the interrupt a later
- * supersede sends to this process cannot do the job.
+ * written after stdin has ended. The caller interrupts the process and only
+ * then releases its stdin.
  *
  * The stops are not awaited — each request is written to the CLI before this
  * returns, and a reply is only missing when the process has already gone.
  * @param {string} sessionId - Session identifier
+ * @param {Object} held - The superseded session entry
  */
-function releaseHeldSession(sessionId) {
-  const held = getSession(sessionId);
-  if (!held) {
-    return;
-  }
+function stopOutstandingTasks(sessionId, held) {
   for (const task of backgroundWork.outstanding(sessionId)) {
     // A stop that cannot be delivered changes nothing about what happens
     // next: the process is on its way out either way. Guard the synchronous
-    // call too, so a failing stop can never skip the release below.
+    // call too, so a failing stop can never skip the interrupt that follows.
     try {
       Promise.resolve(held.instance?.stopTask?.(task.taskId)).catch(() => {});
     } catch {
       // Same as a rejected stop.
     }
   }
-  held.releaseInput?.();
 }
 
 /**
@@ -948,10 +954,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   let assistantBudgetSent = false;
 
   // A new turn supersedes any earlier one still holding this session's process
-  // open, so held runs cannot stack up across a conversation.
-  if (sessionKey()) {
-    releaseHeldSession(sessionKey());
-  }
+  // open, so held runs cannot stack up across a conversation. The handoff
+  // itself — interrupting the old instance, then releasing its stdin — is
+  // done by addSession() below once the new queryInstance exists, so the old
+  // run gets a real interrupt() instead of racing a closed stream.
 
   // Arms (or re-arms) the idle countdown that eventually closes stdin.
   const scheduleRelease = () => {
@@ -1138,6 +1144,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // Process streaming messages
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const message of queryInstance) {
+      // A newer run took over this session id after the loop's last await —
+      // interrupt() is in flight but hasn't ended the generator yet. Stop
+      // touching the session's state and client stream; the new run owns both.
+      if (supersededInstances.has(queryInstance)) {
+        break;
+      }
+
       // Capture session ID from first message
       if (message.session_id && !capturedSessionId) {
 
