@@ -326,12 +326,21 @@ function addSession(sessionId, queryInstance, writer = null, releaseInput = null
   );
   if (superseding) {
     supersededInstances.add(existing.instance);
+    // Interrupt before releasing input: releasing first closes the old
+    // instance's stdin, so by the time interrupt() runs there is nothing
+    // left to deliver it to and it fails with "Query closed before response
+    // received" — the old run then dies on an uncontrolled SIGTERM/EOF
+    // instead of a clean interrupt, leaving a window where its `for await`
+    // loop is still processing messages against a session a newer run
+    // already owns.
     Promise.resolve()
       .then(() => existing.instance.interrupt())
       .catch((error) => {
         console.error(`Error interrupting superseded run for session ${sessionId}:`, error?.message || error);
+      })
+      .finally(() => {
+        existing.releaseInput?.();
       });
-    existing.releaseInput?.();
   }
   const carried = superseding ? null : existing;
   activeSessions.set(sessionId, {
@@ -732,10 +741,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   let assistantBudgetSent = false;
 
   // A new turn supersedes any earlier one still holding this session's process
-  // open, so held runs cannot stack up across a conversation.
-  if (sessionKey()) {
-    getSession(sessionKey())?.releaseInput?.();
-  }
+  // open, so held runs cannot stack up across a conversation. The handoff
+  // itself — interrupting the old instance, then releasing its stdin — is
+  // done by addSession() below once the new queryInstance exists, so the old
+  // run gets a real interrupt() instead of racing a closed stream.
 
   // Arms (or re-arms) the idle countdown that eventually closes stdin.
   const scheduleRelease = () => {
@@ -919,6 +928,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // Process streaming messages
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const message of queryInstance) {
+      // A newer run took over this session id after the loop's last await —
+      // interrupt() is in flight but hasn't ended the generator yet. Stop
+      // touching the session's state and client stream; the new run owns both.
+      if (supersededInstances.has(queryInstance)) {
+        break;
+      }
+
       // Capture session ID from first message
       if (message.session_id && !capturedSessionId) {
 
