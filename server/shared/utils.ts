@@ -143,7 +143,6 @@ export const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || os.homedir();
  */
 export const FORBIDDEN_WORKSPACE_PATHS = [
   // Unix
-  '/',
   '/etc',
   '/bin',
   '/sbin',
@@ -339,7 +338,7 @@ export async function validateWorkspacePath(requestedPath: string): Promise<Work
     const absolutePath = path.resolve(normalizedRequestedPath);
     const normalizedPath = normalizeProjectPath(absolutePath);
 
-    if (FORBIDDEN_WORKSPACE_PATHS.includes(normalizedPath) || normalizedPath === '/') {
+    if (FORBIDDEN_WORKSPACE_PATHS.includes(normalizedPath)) {
       return {
         valid: false,
         error: 'Cannot use system-critical directories as workspace locations',
