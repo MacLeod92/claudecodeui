@@ -192,7 +192,6 @@ export const FORBIDDEN_WORKSPACE_PATHS = [
   '/root',
   '/lib',
   '/lib64',
-  '/opt',
   '/tmp',
   '/run',
   // Windows
