@@ -61,6 +61,7 @@ const renderController = (initialProjects: Project[]) => renderHook(
     setCurrentProject: vi.fn(),
     setSidebarVisible: vi.fn(),
     sidebarVisible: true,
+    backgroundSessionIds: new Set<string>(),
   }),
   { initialProps: { projects: initialProjects } },
 );
