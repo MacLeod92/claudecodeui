@@ -29,6 +29,14 @@ import type {
  */
 
 const SESSION_ID = 'app-hold-side-question';
+
+// These tests pin what happens when a superseded run and the run that
+// replaced it are both live. A new turn normally waits for the old process to
+// exit (see releaseHeldSession), and the overlap only happens once those
+// deadlines pass, so set them to zero to reach it at once.
+process.env.CLAUDE_SUPERSEDE_TASK_STOP_WAIT_MS = '0';
+process.env.CLAUDE_SUPERSEDE_EXIT_WAIT_MS = '0';
+process.env.CLAUDE_SUPERSEDE_CLOSE_WAIT_MS = '0';
 const NATIVE_ID = 'native-hold-side-question';
 const QUESTION = 'Which file holds the router?';
 const NATIVE_ANSWER = 'The router lives in src/router.ts.';

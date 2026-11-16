@@ -289,10 +289,11 @@ test('a new turn stops the tasks the held process still has going before letting
     const secondRun = queryClaudeSDK('Continue', { sessionId: SESSION_ID, cwd }, writer as never, { ...context, createQuery: second.createQuery });
     await settle();
     assert.deepEqual(first.script.stopped, ['a1'], 'the held process is told to stop its agent');
-    assert.equal(first.script.released(), true, 'and is then let go');
-    assert.deepEqual(second.script.stopped, [], 'the new process is untouched');
+    assert.equal(first.script.released(), false, 'stdin stays open until the stop takes');
 
     first.script.emit(taskNotification('a1', 'toolu_agent', 'stopped'));
+    await waitFor(() => first.script.released());
+    assert.deepEqual(second.script.stopped, [], 'the new process is untouched');
     first.script.end();
     await firstRun;
     second.script.emit(init());
@@ -338,8 +339,7 @@ test('a held process is still let go when stopping its tasks throws', async () =
     assert.equal(first.script.released(), false, 'the first process is held for its agent');
 
     const secondRun = queryClaudeSDK('Continue', { sessionId: SESSION_ID, cwd }, writer as never, { ...context, createQuery: second.createQuery });
-    await settle();
-    assert.equal(first.script.released(), true, 'the held process is let go anyway');
+    await waitFor(() => first.script.released());
 
     first.script.end();
     await firstRun;
@@ -349,6 +349,110 @@ test('a held process is still let go when stopping its tasks throws', async () =
     await secondRun;
     assert.equal(second.script.released(), true, 'the new turn ran to completion');
   } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a new turn waits for the superseded process to finish before starting its own', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
+  const first = createScriptedQuery();
+  const second = createScriptedQuery();
+  let secondCreated = false;
+  const sent: NormalizedMessage[] = [];
+  const writer = { send: (message: NormalizedMessage) => { sent.push(message); }, userId: null };
+  const sessions = new ClaudeSessionsProvider({ getLiveRunStartTime: () => null });
+  const context: Omit<ProviderRuntimeContext, 'createQuery'> = {
+    resolveProviderSessionId: () => null,
+    resolveResumeModel: async () => undefined,
+    getProviderModels: async () => CLAUDE_PREDEFINED_MODELS as never,
+    normalizeMessage: (raw, sessionId) => sessions.normalizeMessage(raw, sessionId),
+    isProviderInstalled: async () => true,
+  };
+  const trackedSecond: NonNullable<ProviderRuntimeContext['createQuery']> = (options) => {
+    secondCreated = true;
+    return second.createQuery(options);
+  };
+
+  try {
+    const firstRun = queryClaudeSDK('start an agent', { sessionId: SESSION_ID, cwd }, writer as never, { ...context, createQuery: first.createQuery });
+    await settle();
+    first.script.emit(init());
+    first.script.emit(toolUse('toolu_agent', 'Agent', { prompt: 'sleep 90', subagent_type: 'general-purpose', run_in_background: true }));
+    first.script.emit(taskStarted('a1', 'toolu_agent', 'local_agent'));
+    first.script.emit(ack('toolu_agent', 'Async agent launched successfully.', { status: 'async_launched', agentId: 'a1' }));
+    first.script.emit(result());
+    await waitFor(() => sent.some((message) => message.kind === 'complete'));
+
+    const secondRun = queryClaudeSDK('Continue', { sessionId: SESSION_ID, cwd }, writer as never, { ...context, createQuery: trackedSecond });
+    first.script.emit(taskNotification('a1', 'toolu_agent', 'stopped'));
+    await waitFor(() => first.script.released());
+    await settle();
+    assert.equal(secondCreated, false, 'the new CLI does not start while the old one is still running');
+
+    first.script.end();
+    await firstRun;
+    await waitFor(() => secondCreated);
+    second.script.emit(init());
+    second.script.emit(result());
+    second.script.end();
+    await secondRun;
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a superseded process that ignores the stop is interrupted, then closed', async () => {
+  const saved = ['TASK_STOP', 'EXIT', 'CLOSE'].map((name) => [name, process.env[`CLAUDE_SUPERSEDE_${name}_WAIT_MS`]] as const);
+  process.env.CLAUDE_SUPERSEDE_TASK_STOP_WAIT_MS = '100';
+  process.env.CLAUDE_SUPERSEDE_EXIT_WAIT_MS = '100';
+  process.env.CLAUDE_SUPERSEDE_CLOSE_WAIT_MS = '1000';
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
+  const first = createScriptedQuery();
+  const second = createScriptedQuery();
+  const calls: string[] = [];
+  const sent: NormalizedMessage[] = [];
+  const writer = { send: (message: NormalizedMessage) => { sent.push(message); }, userId: null };
+  const sessions = new ClaudeSessionsProvider({ getLiveRunStartTime: () => null });
+  const context: Omit<ProviderRuntimeContext, 'createQuery'> = {
+    resolveProviderSessionId: () => null,
+    resolveResumeModel: async () => undefined,
+    getProviderModels: async () => CLAUDE_PREDEFINED_MODELS as never,
+    normalizeMessage: (raw, sessionId) => sessions.normalizeMessage(raw, sessionId),
+    isProviderInstalled: async () => true,
+  };
+  // The Monitor case: stop_task is acknowledged, the task keeps running, and
+  // the process only goes away when it is killed.
+  const stubborn: NonNullable<ProviderRuntimeContext['createQuery']> = (options) =>
+    Object.assign(first.createQuery(options), {
+      interrupt: async () => { calls.push('interrupt'); },
+      close: () => { calls.push('close'); first.script.end(); },
+    });
+
+  try {
+    const firstRun = queryClaudeSDK('watch a log', { sessionId: SESSION_ID, cwd }, writer as never, { ...context, createQuery: stubborn });
+    await settle();
+    first.script.emit(init());
+    first.script.emit(toolUse('toolu_mon', 'Monitor', { command: 'tail -f log', description: 'watch' }));
+    first.script.emit(taskStarted('m1', 'toolu_mon', 'local_bash'));
+    first.script.emit(result());
+    await waitFor(() => sent.some((message) => message.kind === 'complete'));
+
+    const secondRun = queryClaudeSDK('Continue', { sessionId: SESSION_ID, cwd }, writer as never, { ...context, createQuery: second.createQuery });
+    await firstRun;
+    assert.deepEqual(first.script.stopped, ['m1']);
+    assert.deepEqual(calls, ['interrupt', 'close'], 'interrupted when the stop did not take, closed when it would not exit');
+
+    await waitFor(() => second.script.released() === false && sent.length > 0);
+    second.script.emit(init());
+    second.script.emit(result());
+    second.script.end();
+    await secondRun;
+    assert.equal(second.script.released(), true, 'the new turn ran to completion');
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[`CLAUDE_SUPERSEDE_${name}_WAIT_MS`];
+      else process.env[`CLAUDE_SUPERSEDE_${name}_WAIT_MS`] = value;
+    }
     await rm(cwd, { recursive: true, force: true });
   }
 });
