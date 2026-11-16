@@ -135,6 +135,24 @@ const abortedSessionIds = new Set<string>();
 // (see addSession). Their run loops must stay silent on wind-down: the map
 // entry, the abort flag, and all client-facing events belong to the new run.
 const supersededInstances = new WeakSet<ClaudeQuery>();
+// Settles when the run that owns a query instance has finished: its stream
+// ended (the CLI closed its stdout, which it does on exit) and its cleanup ran.
+// A new turn waits on this before it starts its own CLI, so the superseded
+// process can no longer append to the session file next to the new one.
+const runFinished = new WeakMap<ClaudeQuery, Promise<void>>();
+
+// The supersede wait (see releaseHeldSession). Read on each use so tests can
+// shorten them. Total worst case is the sum of the three.
+//  - TASK_STOP: how long the stopped tasks get to leave the tracker. The CLI
+//    acknowledges stop_task without stopping some tasks (Monitor, CLI
+//    2.1.318), so the acknowledgement alone proves nothing.
+//  - EXIT: how long the released process gets to exit on its own.
+//  - CLOSE: how long it gets after close(), which kills it (SIGTERM, then
+//    SIGKILL in the SDK). After that the new turn starts anyway.
+const supersedeWaitMs = (name: 'TASK_STOP' | 'EXIT' | 'CLOSE', fallback: number) => {
+  const value = parseInt(process.env[`CLAUDE_SUPERSEDE_${name}_WAIT_MS`] ?? '', 10);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+};
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS ?? '', 10) || 55000;
 
@@ -543,38 +561,81 @@ function addSession(
 }
 
 /**
- * Lets go of the process an earlier run left holding a session open, so the
- * next turn can take the session over.
+ * Lets go of the process an earlier run left holding a session open, and
+ * waits until that process is gone, so the next turn can take the session
+ * over without two CLIs appending to the same session file.
  *
  * Closing stdin is not enough on its own: the CLI's wind-down waits for the
- * background agents the process still has going — for up to the ceiling it
- * was started with (BG_WAIT_CEILING_MS) — so an abandoned process with an
- * agent outstanding would run next to the process that replaced it for as
- * long as the agent does, both appending to the same session file. Stop the
- * tasks first, while stdin is still open: the SDK drops control requests
- * written after stdin has ended, which is also why the interrupt a later
- * supersede sends to this process cannot do the job.
+ * background work the process still has going (for agents, up to
+ * BG_WAIT_CEILING_MS). Stop the tasks first, while stdin is still open: the
+ * SDK drops control requests written after stdin has ended.
  *
- * The stops are not awaited — each request is written to the CLI before this
- * returns, and a reply is only missing when the process has already gone.
+ * A stop is not trusted until the task leaves the tracker. The CLI can
+ * acknowledge stop_task and keep a Monitor running. If tasks remain, or the
+ * turn used a tool that reports no tasks (Monitor on some CLIs), the process
+ * is interrupted, released, and given time to exit. A process that is still
+ * alive after that is closed, which kills it.
+ *
+ * The new turn starts after the process exits or after the last deadline,
+ * whichever comes first. Every step is best effort and never throws.
  * @param {string} sessionId - Session identifier
  */
-function releaseHeldSession(sessionId: string) {
+async function releaseHeldSession(sessionId: string): Promise<void> {
   const held = getSession(sessionId);
   if (!held) {
     return;
   }
-  for (const task of backgroundWork.outstanding(sessionId)) {
-    // A stop that cannot be delivered changes nothing about what happens
-    // next: the process is on its way out either way. Guard the synchronous
-    // call too, so a failing stop can never skip the release below.
+  const instance = held.instance;
+  const finished = instance ? runFinished.get(instance) : undefined;
+  const ended = { value: false };
+  finished?.then(() => { ended.value = true; }, () => { ended.value = true; });
+
+  const outstanding = backgroundWork.outstanding(sessionId);
+  for (const task of outstanding) {
+    // Guard the synchronous call too, so a failing stop can never skip the
+    // release below.
     try {
-      Promise.resolve(held.instance?.stopTask?.(task.taskId)).catch(() => {});
+      Promise.resolve(instance?.stopTask?.(task.taskId)).catch(() => {});
     } catch {
       // Same as a rejected stop.
     }
   }
+
+  if (outstanding.length > 0) {
+    const deadline = Date.now() + supersedeWaitMs('TASK_STOP', 3000);
+    while (backgroundWork.outstanding(sessionId).length > 0 && !ended.value && Date.now() < deadline) {
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+    }
+    if (backgroundWork.outstanding(sessionId).length > 0 && !ended.value) {
+      console.warn(`[claude] superseded run for ${sessionId} kept tasks running after stop_task; interrupting`);
+      // Sent before the release: the SDK drops control requests after stdin ends.
+      Promise.resolve().then(() => instance?.interrupt?.()).catch(() => {});
+    }
+  }
+
   held.releaseInput?.();
+
+  if (!finished || ended.value) {
+    return;
+  }
+  const waitFor = (ms: number) => Promise.race([
+    finished.catch(() => {}),
+    new Promise<void>((resolve) => { setTimeout(resolve, ms); }),
+  ]);
+  await waitFor(supersedeWaitMs('EXIT', 5000));
+  if (ended.value) {
+    return;
+  }
+  console.warn(`[claude] superseded run for ${sessionId} did not exit after release; closing it`);
+  try {
+    (instance as { close?: () => void }).close?.();
+  } catch {
+    // The process may already be gone.
+  }
+  await waitFor(supersedeWaitMs('CLOSE', 3000));
+  if (!ended.value) {
+    console.warn(`[claude] superseded run for ${sessionId} still not finished; starting the new turn anyway`);
+  }
 }
 
 /**
@@ -1219,7 +1280,7 @@ async function queryClaudeSDK(
   // A new turn supersedes any earlier one still holding this session's process
   // open, so held runs cannot stack up across a conversation.
   if (sessionKey()) {
-    releaseHeldSession(sessionKey()!);
+    await releaseHeldSession(sessionKey()!);
   }
 
   // Closes the held stdin, going through the activeSessions entry so
@@ -1286,6 +1347,10 @@ async function queryClaudeSDK(
   // Hoisted above the try so the catch's cleanup can tell whether this run
   // still owns the activeSessions entry (or was superseded by a newer run).
   let queryInstance: ClaudeQuery | null = null;
+  // Resolved in the finally below; registered on the instance once it exists
+  // (see runFinished).
+  let markRunFinished: () => void = () => {};
+  const finishedPromise = new Promise<void>((resolve) => { markRunFinished = resolve; });
 
   // Delivers a message into this run while its turn is going. Priority `next`
   // makes the CLI read it at the next tool-call boundary, without stopping the
@@ -1536,6 +1601,8 @@ async function queryClaudeSDK(
         options: sdkOptions
       });
     }
+
+    runFinished.set(queryInstance, finishedPromise);
 
     // Track the query instance for abort capability
     if (sessionKey()) {
@@ -1867,6 +1934,7 @@ async function queryClaudeSDK(
       steerFollowUpTimer = null;
     }
     releasePromptStream();
+    markRunFinished();
   }
 }
 
