@@ -31,6 +31,7 @@ import {
 } from '@/modules/providers/list/claude/claude-models.provider.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import { askClaudeSideQuestion } from '@/modules/providers/list/claude/claude-side-question.provider.js';
+import { claudePlanUsageService } from '@/modules/providers/services/claude-plan-usage.service.js';
 import {
   createNotificationEvent,
   notifyBackgroundWorkCompleted,
@@ -1690,6 +1691,10 @@ async function queryClaudeSDK(
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const rawMessage of queryInstance) {
       const message = rawMessage as AnyRecord;
+      // The account's plan usage, sent once per turn; every tab shows it.
+      if (message.type === 'rate_limit_event') {
+        claudePlanUsageService.recordRateLimitInfo(message.rate_limit_info);
+      }
       // Capture session ID from first message
       if (message.session_id && !capturedSessionId) {
 

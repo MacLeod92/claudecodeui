@@ -1,5 +1,6 @@
 import express, { type Request, type Response } from 'express';
 
+import { claudePlanUsageService } from '@/modules/providers/services/claude-plan-usage.service.js';
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { claudeSettingsPermissionsService } from '@/modules/providers/services/claude-settings-permissions.service.js';
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
@@ -644,6 +645,14 @@ const parseCustomModelsOnlyPayload = (payload: unknown): boolean => {
 
   return enabled;
 };
+
+/** The newest claude.ai plan usage a Claude turn reported; `null` before the first turn. */
+router.get(
+  '/claude/plan-usage',
+  asyncHandler(async (_req: Request, res: Response) => {
+    res.json(createApiSuccessResponse(claudePlanUsageService.getUsage()));
+  }),
+);
 
 router.get(
   '/:provider/auth/status',
