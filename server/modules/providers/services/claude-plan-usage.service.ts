@@ -15,12 +15,12 @@ type PlanUsageWindow = {
 type PlanUsageWindowKey = 'fiveHour' | 'sevenDay' | 'sevenDayOpus' | 'sevenDaySonnet';
 
 /**
- * The weekly utilization at the first reading of a local calendar day. The
- * client measures "used today" against it.
+ * The weekly utilization at the first reading of a ration day. The client
+ * measures "used today" against it.
  */
 type PlanUsageDayBaseline = {
-  /** Local date, `YYYY-MM-DD`. */
-  date: string;
+  /** Epoch ms when this ration day started (see `rationDayStart`). */
+  dayStart: number;
   weekUtilization: number;
   /** The weekly window this baseline belongs to; a new window drops it. */
   weekResetsAt: number | null;
@@ -135,16 +135,25 @@ const readWindows = (info: AnyRecord): Partial<Record<PlanUsageWindowKey, PlanUs
   return windows;
 };
 
-const localDateKey = (epochMs: number): string => {
-  const date = new Date(epochMs);
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
+const DAY_MS = 86_400_000;
+
+/**
+ * Ration days start at the weekly reset's time of day (a week that resets
+ * Thursday 03:00 has days from 03:00 to 03:00), so the week is 7 equal days.
+ * The client computes the same start. Without a reset time, local midnight.
+ */
+const rationDayStart = (weekResetsAt: number | null, now: number): number => {
+  if (weekResetsAt === null) {
+    const midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    return midnight.getTime();
+  }
+  return weekResetsAt - Math.ceil((weekResetsAt - now) / DAY_MS) * DAY_MS;
 };
 
 /**
- * Keeps the baseline while the day and the weekly window stay the same. On a
- * new day the current reading becomes the baseline. When the weekly window
+ * Keeps the baseline while the ration day and the weekly window stay the same.
+ * On a new day the current reading becomes the baseline. When the weekly window
  * itself rolled over, the week starts from zero, so the baseline is zero.
  */
 const nextDayBaseline = (
@@ -155,13 +164,13 @@ const nextDayBaseline = (
   if (!week) {
     return previous;
   }
-  const date = localDateKey(now);
+  const dayStart = rationDayStart(week.resetsAt, now);
   const sameWeek = previous !== null && previous.weekResetsAt === week.resetsAt;
-  if (previous && previous.date === date && sameWeek) {
+  if (previous && previous.dayStart === dayStart && sameWeek) {
     return previous;
   }
   return {
-    date,
+    dayStart,
     weekUtilization: previous && !sameWeek ? 0 : week.utilization,
     weekResetsAt: week.resetsAt,
   };

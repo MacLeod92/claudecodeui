@@ -116,7 +116,12 @@ export default function PlanUsageModal({ usage, now, isOpen, onClose }: PlanUsag
 
           {ration && (
             <div className="space-y-3 rounded-2xl border border-border bg-muted/40 p-4">
-              <div className="text-sm font-semibold text-foreground">{t('chat:planUsage.rationTitle')}</div>
+              <div className="flex items-baseline justify-between gap-3">
+                <div className="text-sm font-semibold text-foreground">{t('chat:planUsage.rationTitle')}</div>
+                <div className="text-xs text-muted-foreground">
+                  {t('chat:planUsage.dayEndsAt', { time: formatResetTime(ration.todayEndsAt, now) })}
+                </div>
+              </div>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                 <dt className="text-muted-foreground">{t('chat:planUsage.todayAllowance')}</dt>
                 <dd className="text-right tabular-nums text-foreground">{formatPercent(ration.todayAllowance)}</dd>

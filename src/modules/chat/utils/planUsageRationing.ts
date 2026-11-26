@@ -1,7 +1,6 @@
 import type { ClaudePlanUsage, ClaudePlanUsageWindow } from '@/shared/types';
 
 const DAY_MS = 86_400_000;
-const WEEK_MS = 7 * DAY_MS;
 
 /** How the rest of the weekly window divides into equal days. All shares are 0 to 1 of the week. */
 export type WeeklyRation = {
@@ -16,20 +15,10 @@ export type WeeklyRation = {
   usedToday: number;
   /** Today's allowance less today's use. Negative when today is over its share. */
   leftToday: number;
+  /** Epoch ms when today's ration day ends and the next one starts. */
+  todayEndsAt: number;
 };
 
-const localDateKey = (epochMs: number): string => {
-  const date = new Date(epochMs);
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
-};
-
-const startOfLocalDay = (epochMs: number): number => {
-  const date = new Date(epochMs);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime();
-};
 
 /**
  * A window whose reset time has passed is a new, empty window, so its old
@@ -50,10 +39,13 @@ export function currentUtilization(window: ClaudePlanUsageWindow | undefined, no
  *
  * - `perDay` = remaining / days left. With less than one day left, the whole
  *   remaining share is today's.
+ * - A ration day starts at the weekly reset's time of day, so a week that
+ *   resets Thursday 03:00 is 7 equal days from 03:00 to 03:00. The server
+ *   uses the same rule for its day baseline.
  * - `todayAllowance` uses the first reading of today, so it does not shrink
- *   while you work: (1 - baseline) / days left at the start of today. With no
- *   reading today yet, nothing is used today, so the baseline is the current
- *   reading.
+ *   while you work: (1 - baseline) / whole ration days left, today included.
+ *   With no reading today yet, nothing is used today, so the baseline is the
+ *   current reading.
  *
  * Returns null when no weekly window is known or it has already reset.
  */
@@ -68,18 +60,19 @@ export function computeWeeklyRation(usage: ClaudePlanUsage | null, now: number):
   const daysLeft = (week.resetsAt - now) / DAY_MS;
   const perDay = weekRemaining / Math.max(daysLeft, 1);
 
+  // Whole ration days left, today included; today started that many days before the reset.
+  const rationDaysLeft = Math.ceil((week.resetsAt - now) / DAY_MS);
+  const todayStart = week.resetsAt - rationDaysLeft * DAY_MS;
+
   const baseline = usage?.dayBaseline;
   const baselineIsToday = Boolean(
     baseline
-    && baseline.date === localDateKey(now)
+    && baseline.dayStart === todayStart
     && baseline.weekResetsAt === week.resetsAt,
   );
   const todayBaseline = baseline && baselineIsToday ? Math.min(baseline.weekUtilization, weekUsed) : weekUsed;
 
-  // Today starts at local midnight, or at the window start if the week began today.
-  const todayStart = Math.max(startOfLocalDay(now), week.resetsAt - WEEK_MS);
-  const daysLeftAtTodayStart = (week.resetsAt - todayStart) / DAY_MS;
-  const todayAllowance = Math.max(0, 1 - todayBaseline) / Math.max(daysLeftAtTodayStart, 1);
+  const todayAllowance = Math.max(0, 1 - todayBaseline) / Math.max(rationDaysLeft, 1);
   const usedToday = weekUsed - todayBaseline;
 
   return {
@@ -90,5 +83,6 @@ export function computeWeeklyRation(usage: ClaudePlanUsage | null, now: number):
     todayAllowance,
     usedToday,
     leftToday: todayAllowance - usedToday,
+    todayEndsAt: todayStart + DAY_MS,
   };
 }

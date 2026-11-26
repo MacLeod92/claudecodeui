@@ -2049,7 +2049,10 @@ export type ClaudePlanUsage = {
     disabledReason: string | null;
     resetsAt: number | null;
   };
-  /** The weekly utilization at the first reading of a local day; "used today" counts from it. */
-  dayBaseline: { date: string; weekUtilization: number; weekResetsAt: number | null } | null;
+  /**
+   * The weekly utilization at the first reading of a ration day; "used today"
+   * counts from it. A ration day starts at the weekly reset's time of day.
+   */
+  dayBaseline: { dayStart: number; weekUtilization: number; weekResetsAt: number | null } | null;
   updatedAt: number;
 };

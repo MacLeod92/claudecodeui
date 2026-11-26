@@ -94,7 +94,24 @@ test('the day baseline stays for the day and moves on the next day', () => {
   advance(24 * HOUR);
   const nextDay = service.recordRateLimitInfo(realEvent(0.05, 0.3));
   assert.equal(nextDay?.dayBaseline?.weekUtilization, 0.3);
-  assert.notEqual(nextDay?.dayBaseline?.date, sameDay?.dayBaseline?.date);
+  assert.notEqual(nextDay?.dayBaseline?.dayStart, sameDay?.dayBaseline?.dayStart);
+});
+
+test('a ration day starts at the weekly reset time of day, not at midnight', () => {
+  // The week resets Thu 3 Dec 03:00 (local), so each day runs 03:00 to 03:00.
+  const weekResetsAt = new Date(2026, 11, 3, 3, 0).getTime() / 1000;
+  const { service, advance } = createHarness();
+  advance(-6 * HOUR); // 26 Nov 03:00, the start of a ration day
+  const atStart = service.recordRateLimitInfo(realEvent(0.1, 0.2, weekResetsAt));
+  assert.equal(atStart?.dayBaseline?.dayStart, new Date(2026, 10, 26, 3, 0).getTime());
+
+  advance(23 * HOUR); // 27 Nov 02:00: past midnight, still the same ration day
+  const beforeThree = service.recordRateLimitInfo(realEvent(0.1, 0.4, weekResetsAt));
+  assert.equal(beforeThree?.dayBaseline?.weekUtilization, 0.2);
+
+  advance(HOUR); // 27 Nov 03:00: a new ration day
+  const afterThree = service.recordRateLimitInfo(realEvent(0.1, 0.45, weekResetsAt));
+  assert.equal(afterThree?.dayBaseline?.weekUtilization, 0.45);
 });
 
 test('a new weekly window starts the baseline from zero', () => {

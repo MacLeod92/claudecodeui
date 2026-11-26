@@ -503,12 +503,13 @@
     "resetsAt": "Resets {{time}}",
     "resetSinceReading": "Reset since the last reading",
     "rationTitle": "Daily ration",
+    "dayEndsAt": "New day {{time}}",
     "todayAllowance": "Today's share",
     "usedToday": "Used today",
     "leftToday": "Left today",
     "overToday": "Over today's share",
     "rationFromNow": "From now: {{perDay}} per day for {{days}} days.",
-    "rationNote": "Shares are percentages of the weekly limit, split equally over the days left. Use outside CloudCLI counts on the day of the next CloudCLI turn.",
+    "rationNote": "Shares are percentages of the weekly limit, split equally over the days left. Each day starts at the weekly reset time. Use outside CloudCLI counts on the day of the next CloudCLI turn.",
     "overage": "Extra usage: {{status}}",
     "overageInUse": "in use"
   }
