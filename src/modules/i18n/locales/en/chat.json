@@ -489,5 +489,27 @@
     "customModelsOnlyHint": "Hide the built-in {{provider}} models from every model picker and make your first model the default. Built-in models stay listed until you add a model.",
     "builtInModelsHidden": "Hidden from model pickers while “Use only my models” is on.",
     "customModelsOnlyFailed": "Unable to change this setting."
+  },
+  "planUsage": {
+    "pillTitle": "Plan usage: {{percent}}% of this 5-hour session, resets at {{time}}",
+    "pillTitleNoReset": "Plan usage: {{percent}}% of this 5-hour session",
+    "title": "Plan usage",
+    "updatedAt": "Updated {{time}}",
+    "close": "Close",
+    "fiveHour": "Current session (5 hours)",
+    "sevenDay": "This week",
+    "sevenDayOpus": "This week (Opus)",
+    "sevenDaySonnet": "This week (Sonnet)",
+    "resetsAt": "Resets {{time}}",
+    "resetSinceReading": "Reset since the last reading",
+    "rationTitle": "Daily ration",
+    "todayAllowance": "Today's share",
+    "usedToday": "Used today",
+    "leftToday": "Left today",
+    "overToday": "Over today's share",
+    "rationFromNow": "From now: {{perDay}} per day for {{days}} days.",
+    "rationNote": "Shares are percentages of the weekly limit, split equally over the days left. Use outside CloudCLI counts on the day of the next CloudCLI turn.",
+    "overage": "Extra usage: {{status}}",
+    "overageInUse": "in use"
   }
 }

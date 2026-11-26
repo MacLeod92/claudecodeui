@@ -2022,3 +2022,34 @@ type TaskStatus =
 
 /** A TaskMaster task's priority; high, medium and low are the known values and the string fallback tolerates anything else TaskMaster emits. */
 type TaskPriority = 'high' | 'medium' | 'low' | string;
+
+// ---------------------------
+
+//----------------- CLAUDE PLAN USAGE ------------
+
+/** One claude.ai plan window: the share used, from 0 to 1, and when it resets (epoch ms). */
+export type ClaudePlanUsageWindow = {
+  utilization: number;
+  resetsAt: number | null;
+  status: string | null;
+};
+
+/**
+ * The newest claude.ai plan usage that a Claude turn reported, from
+ * `GET /api/providers/claude/plan-usage` or the `claude_plan_usage_updated`
+ * websocket event. Used by the chat module's usage pill and modal.
+ */
+export type ClaudePlanUsage = {
+  windows: Partial<Record<'fiveHour' | 'sevenDay' | 'sevenDayOpus' | 'sevenDaySonnet', ClaudePlanUsageWindow>>;
+  status: string | null;
+  overage: {
+    status: string | null;
+    enabled: boolean | null;
+    inUse: boolean | null;
+    disabledReason: string | null;
+    resetsAt: number | null;
+  };
+  /** The weekly utilization at the first reading of a local day; "used today" counts from it. */
+  dayBaseline: { date: string; weekUtilization: number; weekResetsAt: number | null } | null;
+  updatedAt: number;
+};

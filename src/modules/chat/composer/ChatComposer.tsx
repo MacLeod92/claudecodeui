@@ -33,6 +33,7 @@ import AttachmentRejectionNotice from '@/modules/chat/composer/AttachmentRejecti
 import VoiceInputButton from '@/modules/chat/composer/VoiceInputButton';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
+import PlanUsagePill from '@/modules/chat/composer/PlanUsagePill';
 import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
 import SteeredMessageCard from '@/modules/chat/composer/SteeredMessageCard';
 import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
@@ -76,6 +77,8 @@ type ChatComposerProps = {
   modelsLoading: boolean;
   tokenBudget: Record<string, unknown> | null;
   onShowTokenUsage: () => void;
+  /** Shows the claude.ai plan usage pill beside the token count; true for Claude sessions. */
+  showPlanUsage?: boolean;
   /** Clears the session's context; absent when the session cannot be cleared. */
   onClearContext?: () => void;
   slashCommandsCount: number;
@@ -167,6 +170,7 @@ export default function ChatComposer({
   tokenBudget,
   onClearContext,
   onShowTokenUsage,
+  showPlanUsage = false,
   slashCommandsCount,
   onToggleCommandMenu,
   hasInput,
@@ -368,7 +372,8 @@ export default function ChatComposer({
       {/* The question panel replaces the input, but how to answer often depends on
           how much context is left, so the token usage stays reachable below it. */}
       {hasQuestionPanel && (
-        <div className="mx-auto flex chat-content-width justify-end">
+        <div className="mx-auto flex chat-content-width justify-end gap-1.5">
+          {showPlanUsage && <PlanUsagePill />}
           <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
         </div>
       )}
@@ -500,6 +505,8 @@ export default function ChatComposer({
             {onVoiceTranscript && voiceAvailable && (
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
             )}
+
+            {showPlanUsage && <PlanUsagePill />}
 
             <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
 
